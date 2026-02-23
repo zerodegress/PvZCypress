@@ -1,0 +1,17 @@
+#pragma once
+
+#ifdef CYPRESS_GW1
+#define CYPRESS_GW_SELECT(GW1, GW2) GW1
+#else
+#define CYPRESS_GW_SELECT(GW1, GW2) GW2
+#endif
+
+#ifdef _DEBUG
+#define HAS_DEDICATED_SERVER TRUE
+#define HAS_INGAME_CONSOLE TRUE
+#define CAN_HOST_SERVER TRUE
+#else
+#define HAS_DEDICATED_SERVER FALSE
+#define HAS_INGAME_CONSOLE FALSE
+#define CAN_HOST_SERVER FALSE
+#endif

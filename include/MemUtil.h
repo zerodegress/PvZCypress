@@ -1,0 +1,96 @@
+#pragma once
+#include <cstdint>
+#include <MinHook/MinHook.h>
+
+/// <summary>
+/// Read from the given pointer at the specified offset.
+/// </summary>
+/// <typeparam name="T"></typeparam>
+/// <param name="ptr">Pointer to read from.</param>
+/// <param name="offset">Offset of the data you want to read.</param>
+/// <returns></returns>
+template <typename T>
+static T ptrread(void* ptr, size_t offset)
+{
+    return *reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(ptr) + offset);
+}
+
+/// <summary>
+/// Writes the given value to the specified offset in the given pointer.
+/// </summary>
+/// <typeparam name="T"></typeparam>
+/// <param name="ptr"></param>
+/// <param name="offset"></param>
+/// <param name="value"></param>
+template <typename T>
+static void ptrset(void* ptr, size_t offset, T value)
+{
+    *reinterpret_cast<T*>(reinterpret_cast<uintptr_t>(ptr) + offset) = value;
+}
+
+static void MemSet(DWORD64 address, unsigned __int8 value, size_t size)
+{
+    DWORD dwOld = 0;
+    VirtualProtect((PVOID*)(address), size, PAGE_EXECUTE_READWRITE, &dwOld);
+    memset((void*)address, value, size);
+    VirtualProtect((PVOID*)(address), size, dwOld, &dwOld);
+}
+
+static void MemPatch(DWORD64 address, unsigned __int8* pByte, int numberofbytestowrite)
+{
+    DWORD dwOld = 0;
+    VirtualProtect((PVOID*)(address), numberofbytestowrite, PAGE_EXECUTE_READWRITE, &dwOld);
+    memcpy((void*)address, (PBYTE*)pByte, numberofbytestowrite);
+    VirtualProtect((PVOID*)(address), numberofbytestowrite, dwOld, &dwOld);
+}
+
+// Macros for hooking functions. Written by NM.
+// + Macros
+
+// ++ Hooking
+
+// DEFINE_HOOK and SETUP_HOOK require that the function body for the hook is defined manually after their use
+
+#define DECLARE_HOOK(IN_FUNCTION_NAME, IN_CALL_CONVENTION, IN_RETURN_TYPE, ... /* Function arguments */) \
+    typedef IN_RETURN_TYPE(IN_CALL_CONVENTION *PFN_##IN_FUNCTION_NAME)(__VA_ARGS__);     \
+                                                                                         \
+    extern PFN_##IN_FUNCTION_NAME Orig_##IN_FUNCTION_NAME;                               \
+    extern FARPROC                OrigAddr_##IN_FUNCTION_NAME;                           \
+                                                                                         \
+    IN_RETURN_TYPE IN_CALL_CONVENTION Hk_##IN_FUNCTION_NAME(__VA_ARGS__);
+
+#define DEFINE_HOOK(IN_FUNCTION_NAME, IN_CALL_CONVENTION, IN_RETURN_TYPE, ... /* Function arguments */) \
+    FARPROC                OrigAddr_##IN_FUNCTION_NAME;                      \
+    PFN_##IN_FUNCTION_NAME Orig_##IN_FUNCTION_NAME;                          \
+                                                                             \
+    IN_RETURN_TYPE IN_CALL_CONVENTION Hk_##IN_FUNCTION_NAME(__VA_ARGS__)
+
+#define DISABLE_HOOK(IN_FUNCTION_NAME) MH_DisableHook(OrigAddr_##IN_FUNCTION_NAME);
+
+#define ENABLE_HOOK(IN_FUNCTION_NAME)  MH_EnableHook(OrigAddr_##IN_FUNCTION_NAME);
+
+#define INIT_HOOK(IN_FUNCTION_NAME, IN_ADDRESS) \
+    OrigAddr_##IN_FUNCTION_NAME = reinterpret_cast<FARPROC>(IN_ADDRESS);                                                                \
+                                                                                                                                        \
+    MH_CreateHook(OrigAddr_##IN_FUNCTION_NAME, Hk_##IN_FUNCTION_NAME, reinterpret_cast<LPVOID *>(&Orig_##IN_FUNCTION_NAME));            \
+                                                                                                                                        \
+    ENABLE_HOOK(IN_FUNCTION_NAME);                                                                                                      \
+    //FBML_LOGDEBUG("Hook initialized: {0} ({1:0>8X})", #IN_FUNCTION_NAME, reinterpret_cast<uintptr_t>(OrigAddr_##IN_FUNCTION_NAME));
+
+#define REMOVE_HOOK(IN_FUNCTION_NAME) \
+    DISABLE_HOOK(IN_FUNCTION_NAME);                                                                                                 \
+                                                                                                                                    \
+    MH_RemoveHook(OrigAddr_##IN_FUNCTION_NAME);                                                                                     \
+                                                                                                                                    \
+    Orig_##IN_FUNCTION_NAME = nullptr;                                                                                              \
+                                                                                                                                    \
+    //FBML_LOGDEBUG("Hook removed: {0} ({1:0>8X})", #IN_FUNCTION_NAME, reinterpret_cast<uintptr_t>(OrigAddr_##IN_FUNCTION_NAME));     \
+    OrigAddr_##IN_FUNCTION_NAME = nullptr;
+
+// Wrapper for DEFINE_HOOK intended for use when defining hooks in implementation files
+#define SETUP_HOOK(IN_FUNCTION_NAME, IN_CALL_CONVENTION, IN_RETURN_TYPE, ... /* Function arguments */) \
+    typedef IN_RETURN_TYPE(IN_CALL_CONVENTION *PFN_##IN_FUNCTION_NAME)(__VA_ARGS__);     \
+                                                                                         \
+    DEFINE_HOOK(IN_FUNCTION_NAME, IN_CALL_CONVENTION, IN_RETURN_TYPE, __VA_ARGS__)
+
+// -- Hooking
