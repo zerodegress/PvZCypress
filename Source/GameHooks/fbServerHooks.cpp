@@ -95,7 +95,7 @@ DEFINE_HOOK(
 		{
 		case VK_RETURN:
 			CYPRESS_LOGTOSERVER(LogLevel::Info, "{}", g_commandBoxCommand.c_str());
-			Cypress::HandleCommand(g_commandBoxCommand);
+			//Cypress::HandleCommand(g_commandBoxCommand);
 			break;
 		}
 	}
