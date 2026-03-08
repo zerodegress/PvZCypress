@@ -201,6 +201,16 @@ DEFINE_HOOK(
 		thisPtr->m_reasonText = "Invalid Username Length";
 	}
 
+	for (const char* p = playerName; *p != '\0'; ++p)
+	{
+		if (iscntrl(static_cast<unsigned char>(*p)))
+		{
+			thisPtr->m_shouldDisconnect = true;
+			thisPtr->m_disconnectReason = 0x4;
+			thisPtr->m_reasonText = "Invalid Characters in Username";
+			break;
+		}
+	}
 
 	CYPRESS_LOGTOSERVER(LogLevel::Info, "{} is trying to join from machine {}", playerName, thisPtr->m_machineId.c_str());
 	return Orig_fb_ServerConnection_onCreatePlayerMsg(thisPtr, msg);

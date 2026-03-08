@@ -76,7 +76,9 @@ public:
                     setup.contains("TOD")
                         ? levelSetup.TOD = setup["TOD"].get<std::string>()
                         : levelSetup.TOD = "Day";
-                        levelSetup.SettingsToApply = setup["SettingsToApply"].get<std::string>();
+                    setup.contains("SettingsToApply")
+                        ? levelSetup.SettingsToApply = setup["SettingsToApply"].get<std::string>()
+                        : levelSetup.SettingsToApply = "";
 
                     setup.contains("Loadscreen_LevelName")
                         ? levelSetup.Loadscreen_LevelName = setup["Loadscreen_LevelName"].get<std::string>()
