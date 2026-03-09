@@ -78,7 +78,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug - GW1|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
@@ -292,6 +292,7 @@
     <ClInclude Include="include\fb\Engine\ITypedObject.h" />
     <ClInclude Include="include\fb\Engine\Message.h" />
     <ClInclude Include="include\fb\Engine\MessageListener.h" />
+    <ClInclude Include="include\fb\Engine\ServerGhostManager.h" />
     <ClInclude Include="include\fb\Engine\String.h" />
     <ClInclude Include="include\fb\Engine\ResourceManager.h" />
     <ClInclude Include="include\fb\Engine\TypeInfo.h" />
@@ -306,6 +307,11 @@
     <ClInclude Include="include\fb\Engine\ServerPlayerManager.h" />
     <ClInclude Include="include\fb\Main.h" />
     <ClInclude Include="include\fb\SecureReason.h" />
+    <ClInclude Include="include\fb\TypeInfo\GamePlatform.h" />
+    <ClInclude Include="include\fb\TypeInfo\GameSettings.h" />
+    <ClInclude Include="include\fb\TypeInfo\NetworkSettings.h" />
+    <ClInclude Include="include\fb\TypeInfo\SecureReason.h" />
+    <ClInclude Include="include\fb\TypeInfo\SystemSettings.h" />
     <ClInclude Include="include\GameModules\GW1Module.h" />
     <ClInclude Include="include\GameModules\GW2Module.h" />
     <ClInclude Include="include\IGameModule.h" />

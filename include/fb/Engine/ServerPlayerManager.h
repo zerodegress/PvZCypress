@@ -10,8 +10,10 @@ namespace fb
     {
     public:
 #ifdef CYPRESS_GW1
-        char pad_0000[1320]; //0x0000
-        eastl::vector<ServerPlayer*> m_players; //0x0528
+        char pad_0000[0x260]; //0x0000
+        eastl::vector<ServerPlayer*> m_players; //0x0260
+        char pad_0268[200]; //0x0268
+        eastl::vector<ServerPlayer*> m_spectators; //0x0348
 #else
         char pad_0000[616]; //0x0000
         eastl::vector<ServerPlayer*> m_players; //0x0268
@@ -28,17 +30,16 @@ namespace fb
 
         int spectatorCount()
         {
-#ifdef CYPRESS_GW1
-            //TODO
-            return 0;
-#else
             return m_spectators.size();
-#endif
         }
 
         unsigned int maxSpectatorCount()
         {
+#ifdef CYPRESS_GW1
+            return 0;
+#elif defined(CYPRESS_GW2)
             return ptrread<unsigned int>(this, 0x8E0);
+#endif
         }
 
         int humanPlayerCount()

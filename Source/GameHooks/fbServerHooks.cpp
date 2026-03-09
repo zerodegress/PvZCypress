@@ -43,9 +43,10 @@ DEFINE_HOOK(
 	bool updated = Orig_fb_Server_update(thisPtr, params);
 	if (g_program->IsServer())
 	{
-		Cypress::Server* server = g_program->GetServer();
-		server->UpdateStatus(thisPtr, ptrread<float>(params, 0x28));
 		
+		Cypress::Server* server = g_program->GetServer();
+		server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
+
 		bool statusUpdated = !server->GetStatusUpdated();
 		server->SetStatusUpdated(true);
 		if (statusUpdated)
@@ -160,6 +161,20 @@ DEFINE_HOOK(
 {
 	g_program->GetServer()->SetLoadRequestFromLevelControl(true);
 	Orig_fb_ServerPVZLevelControlEntity_loadLevel(thisPtr, level, inclusion);
+	g_program->GetServer()->SetLoadRequestFromLevelControl(false);
+}
+
+DEFINE_HOOK(
+	fb_ServerLevelControlEntity_loadLevel,
+	__fastcall,
+	void,
+
+	void* thisPtr,
+	bool notifyLevelComplete
+)
+{
+	g_program->GetServer()->SetLoadRequestFromLevelControl(true);
+	Orig_fb_ServerLevelControlEntity_loadLevel(thisPtr, notifyLevelComplete);
 	g_program->GetServer()->SetLoadRequestFromLevelControl(false);
 }
 

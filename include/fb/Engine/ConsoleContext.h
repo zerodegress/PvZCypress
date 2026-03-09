@@ -58,12 +58,22 @@ namespace fb
 {
 	class ConsoleContext {
 	public:
+#ifdef CYPRESS_GW1
+		char pad_0000[344]; //0x0000
+		char* m_args; //0x0158
+		char pad_0160[32]; //0x0160
+		char* m_groupName; //0x0180
+		char pad_0188[24]; //0x0188
+		char* m_method; //0x01A0
+#elif defined(CYPRESS_GW2)
 		char pad_0000[352]; //0x0000
 		char* m_args; //0x0160
 		char pad_0168[32]; //0x0168
 		char* m_groupName; //0x0188
 		char pad_0190[24]; //0x0190
 		char* m_method; //0x01A8
+#endif
+		
 
 		template<typename... Args>
 		ConsoleContext& push(std::format_string<Args...> fmt, Args&&... args)

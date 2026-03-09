@@ -3,6 +3,7 @@
 #include <EASTL/vector.h>
 #include <fb/Engine/ServerPlayer.h>
 #include <fb/Engine/ServerConnection.h>
+#include <fb/Engine/ServerGhostManager.h>
 
 namespace fb
 {
@@ -25,13 +26,19 @@ namespace fb
 
         void sendMessage(void* networkableMessage, void* filter)
         {
+#ifdef CYPRESS_GW1
+            auto func = reinterpret_cast<void(*)(ServerPeer*, void*)>(0x140702010);
+            func(this, networkableMessage);
+#elif defined (CYPRESS_GW2)
             auto func = reinterpret_cast<void(*)(ServerPeer*, void*, void*)>(0x140627D40);
             func(this, networkableMessage, filter);
+#endif
+            
         }
 
-        void* GetGhostManager()
+        ServerGhostManager* GetGhostManager()
         {
-            return ptrread<void*>(this, 0x3F90);
+            return ptrread<ServerGhostManager*>(this, CYPRESS_GW_SELECT(0x3B18, 0x3F90));
         }
 
         unsigned int maxClientCount()

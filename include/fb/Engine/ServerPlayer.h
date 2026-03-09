@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <MemUtil.h>
-#include <fb/SecureReason.h>
+#include <fb/TypeInfo/SecureReason.h>
 
 #define OFFSET_SERVERPLAYER_DISCONNECT CYPRESS_GW_SELECT(0x14075D860, 0x140614B60)
 

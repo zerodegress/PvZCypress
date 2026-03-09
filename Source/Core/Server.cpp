@@ -14,6 +14,9 @@
 #include <fb/Engine/ExecutionContext.h>
 #include <Core/Console/ConsoleFunctions.h>
 #include <fb/Engine/ServerGameContext.h>
+#include <fb/TypeInfo/NetworkSettings.h>
+#include <fb/TypeInfo/SystemSettings.h>
+#include <fb/TypeInfo/GameSettings.h>
 
 using namespace fb;
 
@@ -65,14 +68,15 @@ namespace Cypress
 		}
 
 		LevelSetup setup;
+		setup.m_name = levelName;
+
+#ifdef CYPRESS_GW2
 		if (!levelName.starts_with("Levels/"))
 		{
 			setup.m_name = std::format("Levels/{}/{}", levelName, levelName);
 		}
-		else
-		{
-			setup.m_name = levelName;
-		}
+#endif
+
 		setup.setInclusionOptions(inclusionOptions.c_str());
 
 #ifdef CYPRESS_GW2
@@ -283,9 +287,14 @@ namespace Cypress
 			return;
 		}
 
-		//TODO: IMPL GW1
+#ifdef CYPRESS_GW1
+		auto func = reinterpret_cast<void* (*)(__int64 arena)>(0x141508040);
+		void* msg = func(0x141E7F750);
+#elif defined(CYPRESS_GW2)
 		auto func = reinterpret_cast<void* (*)(__int64 arena, int localPlayerId)>(0x141FCEE70);
 		void* msg = func(0x1429386E0, 0);
+#endif
+		
 
 		fb::String msgText = message.c_str();
 		float messageDuration = std::clamp(duration, 1.0f, 10.0f);
@@ -305,23 +314,31 @@ namespace Cypress
 
 		stream >> playerName >> message >> duration;
 
-		fb::ServerPlayer* player = ServerGameContext::GetInstance()->m_serverPlayerManager->findHumanByName(playerName.c_str());
+		ServerGameContext* gameContext = ServerGameContext::GetInstance();
+		if (!gameContext) return;
+		if (!gameContext->m_serverPlayerManager) return;
+
+		ServerPlayer* player = gameContext->m_serverPlayerManager->findHumanByName(playerName.c_str());
 		if (!player)
 		{
 			cc.push("Player {} not found!", playerName.c_str());
 			return;
 		}
 
-		fb::ServerConnection* connection = ServerGameContext::GetInstance()->m_serverPeer->connectionForPlayer(player);
+		fb::ServerConnection* connection = gameContext->m_serverPeer->connectionForPlayer(player);
 		if (!connection)
 		{
 			cc.push("Connection for player {} not found!", playerName.c_str());
 			return;
 		}
 
-		//TODO: IMPL GW1
+#ifdef CYPRESS_GW1
+		auto func = reinterpret_cast<void* (*)(__int64 arena)>(0x141508040);
+		void* msg = func(0x141E7F750);
+#elif defined(CYPRESS_GW2)
 		auto func = reinterpret_cast<void* (*)(__int64 arena, int localPlayerId)>(0x141FCEE70);
 		void* msg = func(0x1429386E0, 0);
+#endif
 
 		fb::String msgText = message.c_str();
 		float messageDuration = std::clamp(duration, 1.0f, 10.0f);
@@ -379,26 +396,34 @@ namespace Cypress
 			sumDeltaTime = 0;
 			frameCount = 0;
 		}
-
+			
 		fb::ServerPlayerManager* playerMgr = ptrread<fb::ServerPlayerManager*>(fbServerInstance, CYPRESS_GW_SELECT(0x98, 0xA0));
 		fb::ServerPeer* serverPeer = ptrread<fb::ServerPeer*>(fbServerInstance, CYPRESS_GW_SELECT(0x90, 0x98));
-		__int64 ghostMgr = (__int64)serverPeer->GetGhostManager();
-		unsigned int numGhosts = ghostMgr ? (*(unsigned int*)(ghostMgr + 0x468) - *(unsigned int*)(ghostMgr + 0x460)) >> 3 : 0;
+		
+		fb::ServerGhostManager* ghostMgr = serverPeer->GetGhostManager();
+		int ghostcount = ghostMgr->ghostCount();
+		
+		fb::SettingsManager* settingsManager = fb::SettingsManager::GetInstance();
 
-		//@TODO: GW1
-#ifndef CYPRESS_GW1
-		unsigned int maxPlayerCount = *(int*)(*(__int64*)0x142C01048 + 0x30);
+		// +13 to cut off GamePlatform_
+		const char* platformName = fb::toString(settingsManager->getContainer<fb::SystemSettings>("Game")->Platform) + 13;
+
+		unsigned int maxPlayerCount = settingsManager->getContainer<fb::NetworkSettings>("Network")->MaxClientCount;
+		unsigned int maxSpectatorCount = settingsManager->getContainer<fb::GameSettings>("Game")->MaxSpectatorCount;
+
 		if (serverPeer)
 			maxPlayerCount = std::min(maxPlayerCount, serverPeer->maxClientCount());
 
 		std::string playerCountStr = std::format("{}/{} ({}/{}) [{}]",
 			playerMgr->humanPlayerCount(),
-			maxPlayerCount - playerMgr->maxSpectatorCount(),
+			maxPlayerCount - maxSpectatorCount,
 			playerMgr->spectatorCount(),
-			playerMgr->maxSpectatorCount(),
-			*(int*)(*(__int64*)0x142C01048 + 0x30));
-		std::string aiPlayerCountStr = std::format("{}/{} [{}]", playerMgr->aiPlayerCount(), 64, 64 - (playerMgr->humanPlayerCount() + playerMgr->aiPlayerCount()));
-
+			maxSpectatorCount,
+			maxPlayerCount);
+		
+		//not used, but might be useful i guess
+		//std::string aiPlayerCountStr = std::format("{}/{} [{}]", playerMgr->aiPlayerCount(), 64, 64 - (playerMgr->humanPlayerCount() + playerMgr->aiPlayerCount()));
+		
 		g_program->GetServer()->SetStatusColumn1(
 			std::format(
 			"FPS: {} \t\t\t\t"
@@ -411,14 +436,19 @@ namespace Cypress
 			min,
 			sec % 60,
 			playerCountStr,
-			numGhosts,
+			ghostcount,
 			GetMemoryUsage()
 		));
-
-		void* curLevel = ptrread<void*>(fbServerInstance, 0xF0);
-		if (curLevel)
+		
+		fb::LevelSetup setup = ptrread<fb::LevelSetup>(fbServerInstance, CYPRESS_GW_SELECT(0x40, 0x30));
+		if (setup.m_name.length() > 0)
 		{
-			fb::LevelSetup* setup = (fb::LevelSetup*)((__int64)curLevel + 0x118);
+			//creating a server without any of these set will break the status columns, so we need to make sure they are set to something
+			const char* levelName    = extractFileName(setup.m_name.c_str());
+			const char* gameMode     = strlen(setup.getInclusionOption("GameMode")) > 1 ? setup.getInclusionOption("GameMode") : "\t";
+			const char* hostedMode   = strlen(setup.getInclusionOption("HostedMode")) > 1 ? setup.getInclusionOption("HostedMode") : "\t";
+			const char* timeOfDay    = strlen(setup.getInclusionOption("TOD")) > 1 ? setup.getInclusionOption("TOD") : "\t";
+
 			g_program->GetServer()->SetStatusColumn2(
 				std::format(
 					"Level: {} \t\t"
@@ -426,19 +456,18 @@ namespace Cypress
 					"HostedMode: {} \t\t"
 					"TOD: {}\t\t\t\t"
 					"Platform: {}",
-					extractFileName(setup->m_name.c_str()),
-					setup->getInclusionOption("GameMode"),
-					setup->getInclusionOption("HostedMode"),
-					setup->getInclusionOption("TOD"),
-					*(const char**)0x14294E410
+					levelName,
+					gameMode,
+					hostedMode,
+					timeOfDay,
+					platformName
 				));
 		}
 		else
 		{
 			g_program->GetServer()->SetStatusColumn2("Level: No level");
 		}
-#endif
-
+		
 		static size_t tick = 0;
 		size_t fps = int(1.0f / currentDeltaTime);
 		if (tick != fps)
