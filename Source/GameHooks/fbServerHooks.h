@@ -5,12 +5,13 @@
 #include <fb/Engine/ServerPlayer.h>
 #include <fb/Engine/ServerPlayerManager.h>
 #include <fb/Engine/ServerConnection.h>
-#include <fb/SecureReason.h>
+#include <fb/TypeInfo/SecureReason.h>
 #include <Kyber/SocketManager.h>
 
-#define OFFSET_FB_SERVERPVZLEVELCONTROLENTITY_LOADLEVEL 0x140FB4210
+#define OFFSET_FB_SERVERPVZLEVELCONTROLENTITY_LOADLEVEL CYPRESS_GW_SELECT(0x14078C930, 0x140FB4210)
 
 #if(HAS_DEDICATED_SERVER)
+
 DECLARE_HOOK(
 	fb_Server_start,
 	__fastcall,
@@ -61,6 +62,16 @@ DECLARE_HOOK(
 	const char* level,
 	const char* inclusion
 );
+
+DECLARE_HOOK(
+	fb_ServerLevelControlEntity_loadLevel,
+	__fastcall,
+	void,
+
+	void* thisPtr,
+	bool notifyLevelComplete
+);
+
 
 DECLARE_HOOK(
 	fb_ServerLoadLevelMessage_post,

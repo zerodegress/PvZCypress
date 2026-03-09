@@ -27,11 +27,15 @@ void Cypress::GW1Module::InitGameHooks()
 	INIT_HOOK(fb_Server_start, OFFSET_FB_SERVER_START);
 	INIT_HOOK(fb_Server_update, OFFSET_FB_SERVER_UPDATE);
 	INIT_HOOK(fb_editBoxWndProcProxy, OFFSET_EDITBOXWNDPROCPROXY);
-	//INIT_HOOK(fb_windowProcedure, OFFSET_WINDOWPROCEDURE);
+	INIT_HOOK(fb_windowProcedure, OFFSET_WINDOWPROCEDURE);
 	INIT_HOOK(fb_ServerPlayerManager_addPlayer, OFFSET_SERVERPLAYERMANAGER_ADDPLAYER);
 	INIT_HOOK(fb_ServerPlayer_disconnect, OFFSET_SERVERPLAYER_DISCONNECT);
 	INIT_HOOK(fb_OnlineManager_connectToAddress, OFFSET_FB_ONLINEMANAGER_CONNECTTOADDRESS);
 	INIT_HOOK(fb_sub_140112AA0, 0x140112AA0);
+	INIT_HOOK(fb_ServerLevelControlEntity_loadLevel, OFFSET_FB_SERVERPVZLEVELCONTROLENTITY_LOADLEVEL);
+	INIT_HOOK(fb_ServerLoadLevelMessage_post, OFFSET_FB_SERVERLOADLEVELMESSAGE_POST);
+
+	
 #endif
 
 	// fb::Client hooks
@@ -77,11 +81,18 @@ void Cypress::GW1Module::InitDedicatedServerPatches(Cypress::Server* pServer)
 
 void Cypress::GW1Module::RegisterCommands()
 {
+	//optional arguments are labeled as opt<argument>
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "RestartLevel", "", Server::ServerRestartLevel);
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "LoadLevel", "<levelPath> <inclusionOptions> opt<loadScreenGameMode> opt<loadScreenLevelName> opt<loadScreenLevelDescription>", Server::ServerLoadLevel);
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "KickPlayer", "<playerName> opt<reason>", Server::ServerKickPlayer);
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "KickPlayerById", "<playerIndex> opt<reason>", Server::ServerKickPlayerById);
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "BanPlayer", "<playerName> opt<reason>", Server::ServerBanPlayer);
 	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "BanPlayerById", "<playerIndex> opt<reason>", Server::ServerBanPlayerById);
+	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "Say", "<message> opt<duration>", Server::ServerSay);
+
+	//removed for now, crashes when trying to find the player
+	//CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "SayToPlayer", "<message> opt<duration>", Server::ServerSayToPlayer);
+	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "LoadNextPlaylistSetup", "", Server::ServerLoadNextPlaylistSetup);
+	CYPRESS_REGISTER_CONSOLE_FUNCTION("Server", "UnbanPlayer", "<playerName>", Server::ServerUnbanPlayer);
 }
 #endif

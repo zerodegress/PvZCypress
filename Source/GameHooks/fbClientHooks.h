@@ -2,7 +2,7 @@
 #include <MemUtil.h>
 #include <EASTL/string.h>
 #include <fb/Engine/Client.h>
-#include <fb/SecureReason.h>
+#include <fb/TypeInfo/SecureReason.h>
 
 DECLARE_HOOK(
 	fb_Client_enterState,
