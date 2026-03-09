@@ -68,14 +68,15 @@ namespace Cypress
 		}
 
 		LevelSetup setup;
+		setup.m_name = levelName;
+
+#ifdef CYPRESS_GW2
 		if (!levelName.starts_with("Levels/"))
 		{
 			setup.m_name = std::format("Levels/{}/{}", levelName, levelName);
 		}
-		else
-		{
-			setup.m_name = levelName;
-		}
+#endif
+
 		setup.setInclusionOptions(inclusionOptions.c_str());
 
 #ifdef CYPRESS_GW2
