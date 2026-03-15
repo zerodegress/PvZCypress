@@ -49,6 +49,11 @@ void Cypress::GW2Module::InitMemPatches()
 {
 	MemSet(0x1401328DA, 0xE6, 1); //allowCommandlineSettings true
 	MemSet(0x1422DC782, 0x00, 1); //change player name format str from %s_%u to %s
+
+	//infinite consumables
+	BYTE gw2infconsumables[] = { 0xBA, 0x41, 0x00, 0x00, 0x00, 0x90 };
+	MemPatch(0x140D8EF3E, (unsigned char*)gw2infconsumables, sizeof(gw2infconsumables));
+
 #if(HAS_DEDICATED_SERVER)
 	MemSet(0x1401A9AE0, 0x90, 6); //unlock all commands
 #endif
