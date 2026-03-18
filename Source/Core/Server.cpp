@@ -443,6 +443,19 @@ namespace Cypress
 			ghostcount,
 			GetMemoryUsage()
 		));
+
+		//Server restarting the level after the last player in it leaves. Might need for some instances, but is absolutely needed for GW2 because of the following below
+		//If the last player in a GW2 server leaves, anyone who joins afterwards will experience issues where, whether it's by taunting, or using specific abilities, some inputs will lock up. The only workaround so far is that the level is reloaded in someway, whether through restarting or changing it.
+		static int prevplayercount = playerMgr->humanPlayerCount();
+		int curplayercount = playerMgr->humanPlayerCount();
+
+		if (prevplayercount > 0 && curplayercount == 0)
+		{
+			//RestartLevel
+			reinterpret_cast<void(__fastcall*)()>(CYPRESS_GW_SELECT(0x14078EDA0, 0x140674180))();
+		}
+
+		prevplayercount = curplayercount;
 		
 		fb::LevelSetup setup = ptrread<fb::LevelSetup>(fbServerInstance, CYPRESS_GW_SELECT(0x40, 0x30));
 		if (setup.m_name.length() > 0)
