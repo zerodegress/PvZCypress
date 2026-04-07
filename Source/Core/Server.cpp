@@ -21,10 +21,74 @@
 using namespace fb;
 
 #if(HAS_DEDICATED_SERVER)
+namespace
+{
+	using ServerConsoleFn = void(*)(fb::ConsoleContext& cc);
+
+	bool TryExecuteStartupServerCommand(const char* startupCommand)
+	{
+		if (!startupCommand || startupCommand[0] == '\0')
+			return false;
+
+		std::string commandLine = startupCommand;
+		size_t whitespacePos = commandLine.find_first_of(" \t");
+		std::string commandName = whitespacePos == std::string::npos ? commandLine : commandLine.substr(0, whitespacePos);
+		std::string commandArgs = whitespacePos == std::string::npos ? "" : commandLine.substr(whitespacePos + 1);
+
+		const char* methodName = commandName.c_str();
+		constexpr const char* groupName = "Server";
+
+		if (commandName.rfind("Server.", 0) == 0)
+		{
+			methodName += 7;
+		}
+
+		struct CommandMapEntry
+		{
+			const char* name;
+			ServerConsoleFn fn;
+		};
+
+		static const CommandMapEntry commandMap[] =
+		{
+			{ "RestartLevel", &Cypress::Server::ServerRestartLevel },
+			{ "LoadLevel", &Cypress::Server::ServerLoadLevel },
+			{ "KickPlayer", &Cypress::Server::ServerKickPlayer },
+			{ "KickPlayerById", &Cypress::Server::ServerKickPlayerById },
+			{ "BanPlayer", &Cypress::Server::ServerBanPlayer },
+			{ "BanPlayerById", &Cypress::Server::ServerBanPlayerById },
+			{ "Say", &Cypress::Server::ServerSay },
+#ifdef CYPRESS_GW2
+			{ "SayToPlayer", &Cypress::Server::ServerSayToPlayer },
+#endif
+			{ "LoadNextPlaylistSetup", &Cypress::Server::ServerLoadNextPlaylistSetup },
+			{ "UnbanPlayer", &Cypress::Server::ServerUnbanPlayer }
+		};
+
+		for (const CommandMapEntry& entry : commandMap)
+		{
+			if (strcmp(methodName, entry.name) != 0)
+				continue;
+
+			fb::ConsoleContext cc{};
+			cc.m_args = commandArgs.empty() ? const_cast<char*>("") : commandArgs.data();
+			cc.m_groupName = const_cast<char*>(groupName);
+			cc.m_method = const_cast<char*>(entry.name);
+
+			entry.fn(cc);
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "Executed startup command: {}", startupCommand);
+			return true;
+		}
+
+		CYPRESS_LOGMESSAGE(LogLevel::Warning, "Unknown startup command '{}'. Expected Server.<Command>.", startupCommand);
+		return false;
+	}
+}
+
 namespace Cypress
 {
 	void Server::ServerRestartLevel(fb::ConsoleContext& cc)
-	{ 
+	{
 		//fb::PVZServerLevelManager::restartLevel();
 		reinterpret_cast<void(__fastcall*)()>(CYPRESS_GW_SELECT(0x14078EDA0, 0x140674180))();
 	}
@@ -88,7 +152,7 @@ namespace Cypress
 
 		if (!loadScreenLevelDescription.empty())
 			setup.LoadScreen_LevelDescription = loadScreenLevelDescription;
-		
+
 		if (!loadScreenUIAssetPath.empty())
 			setup.LoadScreen_UIAssetPath = loadScreenUIAssetPath;
 
@@ -298,7 +362,7 @@ namespace Cypress
 		auto func = reinterpret_cast<void* (*)(__int64 arena, int localPlayerId)>(0x141FCEE70);
 		void* msg = func(0x1429386E0, 0);
 #endif
-		
+
 
 		fb::String msgText = message.c_str();
 		float messageDuration = std::clamp(duration, 1.0f, 10.0f);
@@ -400,13 +464,13 @@ namespace Cypress
 			sumDeltaTime = 0;
 			frameCount = 0;
 		}
-			
+
 		fb::ServerPlayerManager* playerMgr = ptrread<fb::ServerPlayerManager*>(fbServerInstance, CYPRESS_GW_SELECT(0x98, 0xA0));
 		fb::ServerPeer* serverPeer = ptrread<fb::ServerPeer*>(fbServerInstance, CYPRESS_GW_SELECT(0x90, 0x98));
-		
+
 		fb::ServerGhostManager* ghostMgr = serverPeer->GetGhostManager();
 		int ghostcount = ghostMgr->ghostCount();
-		
+
 		fb::SettingsManager* settingsManager = fb::SettingsManager::GetInstance();
 
 		// +13 to cut off GamePlatform_
@@ -424,10 +488,10 @@ namespace Cypress
 			playerMgr->spectatorCount(),
 			maxSpectatorCount,
 			maxPlayerCount);
-		
+
 		//not used, but might be useful i guess
 		//std::string aiPlayerCountStr = std::format("{}/{} [{}]", playerMgr->aiPlayerCount(), 64, 64 - (playerMgr->humanPlayerCount() + playerMgr->aiPlayerCount()));
-		
+
 		g_program->GetServer()->SetStatusColumn1(
 			std::format(
 			"FPS: {} \t\t\t\t"
@@ -456,7 +520,7 @@ namespace Cypress
 		}
 
 		prevplayercount = curplayercount;
-		
+
 		fb::LevelSetup setup = ptrread<fb::LevelSetup>(fbServerInstance, CYPRESS_GW_SELECT(0x40, 0x30));
 		if (setup.m_name.length() > 0)
 		{
@@ -484,7 +548,7 @@ namespace Cypress
 		{
 			g_program->GetServer()->SetStatusColumn2("Level: No level");
 		}
-		
+
 		static size_t tick = 0;
 		size_t fps = int(1.0f / currentDeltaTime);
 		if (tick != fps)
@@ -605,6 +669,7 @@ namespace Cypress
 		fb_spawnServer(thisPtr, spawnInfo);
 
 		g_program->GetGameModule()->RegisterCommands();
+		TryExecuteStartupServerCommand(fb::ExecutionContext::getOptionValue("startupCommand"));
 
 		g_program->GetServer()->m_banlist.LoadFromFile("bans.json");
 		ServerPeer* peer = ServerGameContext::GetInstance()->m_serverPeer;
