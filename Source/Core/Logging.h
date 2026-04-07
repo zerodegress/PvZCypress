@@ -43,6 +43,22 @@ void Cypress_LogToServer(const char* msg, const char* fileName, int lineNumber, 
 uint64_t Cypress_GetLatestServerLogId();
 std::vector<std::pair<uint64_t, std::string>> Cypress_GetServerLogsSince(uint64_t sinceExclusive, size_t limit = 100);
 
+struct CypressServerEvent
+{
+	uint64_t Id;
+	uint64_t TimestampMs;
+	std::string Type;
+	std::string Source;
+	std::string PayloadJson;
+};
+
+uint64_t Cypress_PublishServerEvent(const char* type, const char* source, const std::string& payloadJson);
+uint64_t Cypress_GetLatestServerEventId();
+std::vector<CypressServerEvent> Cypress_GetServerEventsSince(
+	uint64_t sinceExclusive,
+	size_t limit = 100,
+	const std::string& typeFilter = "");
+
 #if(HAS_DEDICATED_SERVER)
 #define CYPRESS_LOGTOSERVER(logLevel, fmt, ...) \
 do { \

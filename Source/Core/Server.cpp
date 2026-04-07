@@ -299,18 +299,19 @@ namespace
 				return;
 			}
 
-			if (method == "GET" && path == "/v1/status")
+		if (method == "GET" && path == "/v1/status")
+		{
+			nlohmann::json result =
 			{
-				nlohmann::json result =
-				{
-					{"ok", true},
-					{"running", server && server->GetRunning()},
-					{"queuedCommands", server ? server->GetExternalCommandQueueSize() : 0},
-					{"latestLogId", Cypress_GetLatestServerLogId()}
-				};
-				SendJson(clientSocket, 200, "OK", result);
-				return;
-			}
+				{"ok", true},
+				{"running", server && server->GetRunning()},
+				{"queuedCommands", server ? server->GetExternalCommandQueueSize() : 0},
+				{"latestLogId", Cypress_GetLatestServerLogId()},
+				{"latestEventId", Cypress_GetLatestServerEventId()}
+			};
+			SendJson(clientSocket, 200, "OK", result);
+			return;
+		}
 
 			if (method == "GET" && path == "/v1/messages")
 			{
@@ -335,13 +336,61 @@ namespace
 						});
 				}
 
-				SendJson(clientSocket, 200, "OK", {
-					{"ok", true},
-					{"messages", messages},
-					{"latestLogId", Cypress_GetLatestServerLogId()}
+			SendJson(clientSocket, 200, "OK", {
+				{"ok", true},
+				{"messages", messages},
+				{"latestLogId", Cypress_GetLatestServerLogId()}
+				});
+			return;
+		}
+
+		if (method == "GET" && path == "/v1/events")
+		{
+			uint64_t since = 0;
+			size_t limit = 100;
+			std::string type;
+
+			auto sinceIt = query.find("since");
+			if (sinceIt != query.end())
+				since = strtoull(sinceIt->second.c_str(), nullptr, 10);
+			auto limitIt = query.find("limit");
+			if (limitIt != query.end())
+				limit = (size_t)strtoull(limitIt->second.c_str(), nullptr, 10);
+			auto typeIt = query.find("type");
+			if (typeIt != query.end())
+				type = typeIt->second;
+
+			limit = std::clamp(limit, (size_t)1, (size_t)500);
+			auto events = Cypress_GetServerEventsSince(since, limit, type);
+			nlohmann::json resultEvents = nlohmann::json::array();
+			for (const auto& evt : events)
+			{
+				nlohmann::json payload = nlohmann::json::object();
+				try
+				{
+					if (!evt.PayloadJson.empty())
+						payload = nlohmann::json::parse(evt.PayloadJson);
+				}
+				catch (...)
+				{
+				}
+
+				resultEvents.push_back({
+					{"id", evt.Id},
+					{"ts", evt.TimestampMs},
+					{"type", evt.Type},
+					{"source", evt.Source},
+					{"payload", payload}
 					});
-				return;
 			}
+
+			SendJson(clientSocket, 200, "OK", {
+				{"ok", true},
+				{"events", resultEvents},
+				{"latestEventId", Cypress_GetLatestServerEventId()}
+				});
+			return;
+		}
 
 			if (method == "POST" && path == "/v1/command")
 			{
@@ -370,10 +419,11 @@ namespace
 					return;
 				}
 
-				server->QueueExternalCommand(cmd);
-				SendJson(clientSocket, 202, "Accepted", { {"ok", true}, {"queued", true}, {"cmd", cmd} });
-				return;
-			}
+		server->QueueExternalCommand(cmd);
+		Cypress_PublishServerEvent("command.api_queued", "webapi", nlohmann::json({ {"cmd", cmd} }).dump());
+		SendJson(clientSocket, 202, "Accepted", { {"ok", true}, {"queued", true}, {"cmd", cmd} });
+		return;
+	}
 
 			SendJson(clientSocket, 404, "Not Found", { {"ok", false}, {"error", "Unknown endpoint"} });
 		}
@@ -821,9 +871,11 @@ namespace Cypress
 		const bool executed = TryExecuteServerCommandLineInternal(trimmed);
 		if (!executed)
 		{
+			Cypress_PublishServerEvent("command.unknown", "server.command", nlohmann::json({ {"cmd", trimmed} }).dump());
 			CYPRESS_LOGTOSERVER(LogLevel::Warning, "Unknown command: {}", trimmed.c_str());
 			return false;
 		}
+		Cypress_PublishServerEvent("command.executed", "server.command", nlohmann::json({ {"cmd", trimmed} }).dump());
 		return true;
 	}
 
@@ -855,7 +907,11 @@ namespace Cypress
 		for (const auto& command : commands)
 		{
 			CYPRESS_LOGTOSERVER(LogLevel::Info, "[API] {}", command.c_str());
-			ExecuteServerCommandLine(command);
+			const bool ok = ExecuteServerCommandLine(command);
+			Cypress_PublishServerEvent("command.api_executed", "webapi", nlohmann::json({
+				{"cmd", command},
+				{"ok", ok}
+				}).dump());
 		}
 	}
 
@@ -1091,6 +1147,7 @@ namespace Cypress
 		const char* startupCommand = fb::ExecutionContext::getOptionValue("startupCommand");
 		if (startupCommand && startupCommand[0] != '\0')
 		{
+			Cypress_PublishServerEvent("command.startup_requested", "startup", nlohmann::json({ {"cmd", startupCommand} }).dump());
 			ExecuteServerCommandLine(startupCommand);
 		}
 

@@ -49,6 +49,7 @@ Fields:
 - `running`
 - `queuedCommands`
 - `latestLogId`
+- `latestEventId`
 
 ### `GET /v1/messages?since=<id>&limit=<n>`
 
@@ -61,6 +62,22 @@ Each message contains:
 
 - `id`
 - `text`
+
+### `GET /v1/events?since=<id>&limit=<n>&type=<eventType>`
+
+Returns structured server events captured from hook points and API command flow.
+
+- `since`: exclusive event id (default `0`)
+- `limit`: max entries (1..500, default `100`)
+- `type`: optional exact event type filter
+
+Each event contains:
+
+- `id`
+- `ts` (Unix epoch milliseconds)
+- `type`
+- `source`
+- `payload` (JSON object)
 
 ### `POST /v1/command`
 
@@ -86,11 +103,25 @@ Response:
 - For string parameters with spaces, use single quotes, for example:
   - `Server.Say 'Match starting' 6`
 
+## Event Types (Current)
+
+- `command.console_submitted`: command submitted in dedicated server command box.
+- `command.api_queued`: command received by Web API and queued.
+- `command.api_executed`: queued API command executed on server update thread.
+- `command.startup_requested`: startup command from `-startupCommand` captured.
+- `command.executed`: any recognized server command execution.
+- `command.unknown`: unrecognized command attempted.
+- `level.load_requested`: level load message posted.
+- `player.connect_attempt`: player connection/create-player message observed.
+- `player.joined`: player added to server.
+- `player.left`: player disconnected from server.
+
 ## Curl Examples
 
 ```bash
 curl http://127.0.0.1:8787/health
 curl "http://127.0.0.1:8787/v1/messages?since=0&limit=50"
+curl "http://127.0.0.1:8787/v1/events?since=0&limit=50"
 curl -X POST http://127.0.0.1:8787/v1/command \
   -H "Content-Type: application/json" \
   -d '{"cmd":"Server.Say '\''Server online'\'' 6"}'
