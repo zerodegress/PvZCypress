@@ -260,15 +260,16 @@ DEFINE_HOOK(
 	fb::ServerPlayerManager* thisPtr,
 	fb::ServerPlayer* player,
 	const char* nickname
-)
+	)
 	{
 		if (!player->isAIPlayer())
 		{
-			CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), nickname);
+			const char* joinedName = nickname ? nickname : (player->m_name ? player->m_name : "");
+			CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), joinedName);
 			Cypress_PublishServerEvent("player.joined", "hook.fb_ServerPlayerManager_addPlayer",
 				nlohmann::json({
 					{"playerId", player->getPlayerId()},
-					{"name", nickname ? nickname : player->m_name.c_str()}
+					{"name", joinedName}
 					}).dump());
 		}
 		return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
