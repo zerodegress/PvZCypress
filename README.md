@@ -21,3 +21,6 @@ An example batch file that launches a dedicated server can be found at Examples/
 When run from the game directory, this will launch a Team Vanquish server on Zomboss Factory, with a max player count of 48.
 
 For joining, see Examples/Start_Join.bat
+
+# Web API
+Dedicated server Web API documentation is available at [WEB_API.md](WEB_API.md)
