@@ -2,6 +2,9 @@
 #include <cstdio>
 #include <iostream>
 #include <format>
+#include <cstdint>
+#include <vector>
+#include <string>
 
 #include <Core/VersionInfo.h>
 #include <Core/Config.h>
@@ -37,6 +40,8 @@ constexpr const char* Cypress_GetColorForLogLevel(LogLevel inLevel)
 }
 
 void Cypress_LogToServer(const char* msg, const char* fileName, int lineNumber, LogLevel logLevel);
+uint64_t Cypress_GetLatestServerLogId();
+std::vector<std::pair<uint64_t, std::string>> Cypress_GetServerLogsSince(uint64_t sinceExclusive, size_t limit = 100);
 
 #if(HAS_DEDICATED_SERVER)
 #define CYPRESS_LOGTOSERVER(logLevel, fmt, ...) \

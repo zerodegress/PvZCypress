@@ -43,9 +43,9 @@ DEFINE_HOOK(
 	bool updated = Orig_fb_Server_update(thisPtr, params);
 	if (g_program->IsServer())
 	{
-		
-		Cypress::Server* server = g_program->GetServer();
-		server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
+			Cypress::Server* server = g_program->GetServer();
+			server->ProcessExternalCommands();
+			server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
 
 		bool statusUpdated = !server->GetStatusUpdated();
 		server->SetStatusUpdated(true);

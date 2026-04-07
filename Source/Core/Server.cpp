@@ -3,8 +3,20 @@
 #include "Server.h"
 #include <string>
 #include <sstream>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+#include <cctype>
+#include <cstdlib>
 #include <Core/Program.h>
 #include <Core/Settings.h>
+#include <Core/Logging.h>
 #include <fb/Engine/LevelSetup.h>
 #include <fb/Engine/Server.h>
 #include <fb/Main.h>
@@ -17,10 +29,429 @@
 #include <fb/TypeInfo/NetworkSettings.h>
 #include <fb/TypeInfo/SystemSettings.h>
 #include <fb/TypeInfo/GameSettings.h>
+#define _WINSOCKAPI_
+#include <ws2tcpip.h>
+#include <json.hpp>
 
 using namespace fb;
 
 #if(HAS_DEDICATED_SERVER)
+namespace
+{
+	using ServerConsoleFn = void(*)(fb::ConsoleContext& cc);
+
+	struct CommandMapEntry
+	{
+		const char* name;
+		ServerConsoleFn fn;
+	};
+
+	static const CommandMapEntry kServerCommandMap[] =
+	{
+		{ "RestartLevel", &Cypress::Server::ServerRestartLevel },
+		{ "LoadLevel", &Cypress::Server::ServerLoadLevel },
+		{ "KickPlayer", &Cypress::Server::ServerKickPlayer },
+		{ "KickPlayerById", &Cypress::Server::ServerKickPlayerById },
+		{ "BanPlayer", &Cypress::Server::ServerBanPlayer },
+		{ "BanPlayerById", &Cypress::Server::ServerBanPlayerById },
+		{ "Say", &Cypress::Server::ServerSay },
+#ifdef CYPRESS_GW2
+		{ "SayToPlayer", &Cypress::Server::ServerSayToPlayer },
+#endif
+		{ "LoadNextPlaylistSetup", &Cypress::Server::ServerLoadNextPlaylistSetup },
+		{ "UnbanPlayer", &Cypress::Server::ServerUnbanPlayer }
+	};
+
+	std::unique_ptr<class ApiControlServer> g_apiControlServer;
+
+	bool TryExecuteServerCommandLineInternal(const std::string& commandLine)
+	{
+		size_t whitespacePos = commandLine.find_first_of(" \t");
+		std::string commandName = whitespacePos == std::string::npos ? commandLine : commandLine.substr(0, whitespacePos);
+		std::string commandArgs = whitespacePos == std::string::npos ? "" : commandLine.substr(whitespacePos + 1);
+
+		const char* methodName = commandName.c_str();
+		constexpr const char* groupName = "Server";
+		if (commandName.rfind("Server.", 0) == 0)
+		{
+			methodName += 7;
+		}
+
+		for (const CommandMapEntry& entry : kServerCommandMap)
+		{
+			if (strcmp(methodName, entry.name) != 0)
+				continue;
+
+			fb::ConsoleContext cc{};
+			cc.m_args = commandArgs.empty() ? const_cast<char*>("") : commandArgs.data();
+			cc.m_groupName = const_cast<char*>(groupName);
+			cc.m_method = const_cast<char*>(entry.name);
+			entry.fn(cc);
+			return true;
+		}
+
+		return false;
+	}
+
+	static std::string TrimString(std::string value)
+	{
+		size_t start = value.find_first_not_of(" \t\r\n");
+		if (start == std::string::npos)
+			return "";
+		size_t end = value.find_last_not_of(" \t\r\n");
+		return value.substr(start, end - start + 1);
+	}
+
+	class ApiControlServer
+	{
+	public:
+		ApiControlServer(std::string bindAddress, int port, std::string token)
+			: m_bindAddress(std::move(bindAddress))
+			, m_port(port)
+			, m_token(std::move(token))
+			, m_running(false)
+			, m_listenSocket(INVALID_SOCKET)
+		{
+		}
+
+		~ApiControlServer()
+		{
+			Stop();
+		}
+
+		void Start()
+		{
+			if (m_running.exchange(true))
+				return;
+			m_thread = std::thread(&ApiControlServer::Run, this);
+		}
+
+		void Stop()
+		{
+			if (!m_running.exchange(false))
+				return;
+
+			SOCKET listenSocket = m_listenSocket.exchange(INVALID_SOCKET);
+			if (listenSocket != INVALID_SOCKET)
+			{
+				closesocket(listenSocket);
+			}
+
+			if (m_thread.joinable())
+			{
+				m_thread.join();
+			}
+		}
+
+	private:
+		static std::unordered_map<std::string, std::string> ParseHeaders(const std::string& headerSection)
+		{
+			std::unordered_map<std::string, std::string> headers;
+			size_t start = 0;
+			while (start < headerSection.size())
+			{
+				size_t end = headerSection.find("\r\n", start);
+				if (end == std::string::npos)
+					end = headerSection.size();
+				std::string line = headerSection.substr(start, end - start);
+				size_t colon = line.find(':');
+				if (colon != std::string::npos)
+				{
+					std::string key = line.substr(0, colon);
+					std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+					std::string value = TrimString(line.substr(colon + 1));
+					headers[key] = value;
+				}
+				start = end + 2;
+			}
+			return headers;
+		}
+
+		static std::string BuildHttpResponse(int status, const char* statusText, const std::string& body)
+		{
+			return std::format(
+				"HTTP/1.1 {} {}\r\n"
+				"Content-Type: application/json\r\n"
+				"Connection: close\r\n"
+				"Content-Length: {}\r\n\r\n{}",
+				status,
+				statusText,
+				body.size(),
+				body);
+		}
+
+		void SendJson(SOCKET clientSocket, int status, const char* statusText, const nlohmann::json& body)
+		{
+			const std::string payload = body.dump();
+			const std::string response = BuildHttpResponse(status, statusText, payload);
+			send(clientSocket, response.c_str(), (int)response.size(), 0);
+		}
+
+		bool IsAuthorized(const std::unordered_map<std::string, std::string>& headers)
+		{
+			if (m_token.empty())
+				return true;
+
+			auto it = headers.find("authorization");
+			if (it == headers.end())
+				return false;
+			const std::string expected = std::format("Bearer {}", m_token);
+			return it->second == expected;
+		}
+
+		static std::string GetPathOnly(const std::string& target)
+		{
+			size_t q = target.find('?');
+			return q == std::string::npos ? target : target.substr(0, q);
+		}
+
+		static std::unordered_map<std::string, std::string> ParseQuery(const std::string& target)
+		{
+			std::unordered_map<std::string, std::string> query;
+			size_t q = target.find('?');
+			if (q == std::string::npos || q + 1 >= target.size())
+				return query;
+			std::string queryString = target.substr(q + 1);
+			size_t start = 0;
+			while (start < queryString.size())
+			{
+				size_t amp = queryString.find('&', start);
+				if (amp == std::string::npos)
+					amp = queryString.size();
+				std::string part = queryString.substr(start, amp - start);
+				size_t eq = part.find('=');
+				if (eq != std::string::npos)
+					query[part.substr(0, eq)] = part.substr(eq + 1);
+				else
+					query[part] = "";
+				start = amp + 1;
+			}
+			return query;
+		}
+
+		void HandleClient(SOCKET clientSocket)
+		{
+			std::string request;
+			std::array<char, 4096> buf{};
+
+			while (request.find("\r\n\r\n") == std::string::npos)
+			{
+				int received = recv(clientSocket, buf.data(), (int)buf.size(), 0);
+				if (received <= 0)
+					return;
+				request.append(buf.data(), received);
+				if (request.size() > 1024 * 128)
+					return;
+			}
+
+			size_t headerEnd = request.find("\r\n\r\n");
+			std::string header = request.substr(0, headerEnd);
+			std::string body = request.substr(headerEnd + 4);
+
+			size_t lineEnd = header.find("\r\n");
+			if (lineEnd == std::string::npos)
+			{
+				SendJson(clientSocket, 400, "Bad Request", { {"ok", false}, {"error", "Malformed request line"} });
+				return;
+			}
+
+			std::string requestLine = header.substr(0, lineEnd);
+			size_t m1 = requestLine.find(' ');
+			size_t m2 = requestLine.find(' ', m1 + 1);
+			if (m1 == std::string::npos || m2 == std::string::npos)
+			{
+				SendJson(clientSocket, 400, "Bad Request", { {"ok", false}, {"error", "Malformed request line"} });
+				return;
+			}
+
+			std::string method = requestLine.substr(0, m1);
+			std::string target = requestLine.substr(m1 + 1, m2 - m1 - 1);
+			auto headers = ParseHeaders(header.substr(lineEnd + 2));
+
+			size_t contentLength = 0;
+			auto cl = headers.find("content-length");
+			if (cl != headers.end())
+			{
+				contentLength = (size_t)strtoull(cl->second.c_str(), nullptr, 10);
+			}
+
+			while (body.size() < contentLength)
+			{
+				int received = recv(clientSocket, buf.data(), (int)buf.size(), 0);
+				if (received <= 0)
+					return;
+				body.append(buf.data(), received);
+			}
+
+			if (!IsAuthorized(headers))
+			{
+				SendJson(clientSocket, 401, "Unauthorized", { {"ok", false}, {"error", "Unauthorized"} });
+				return;
+			}
+
+			const std::string path = GetPathOnly(target);
+			const auto query = ParseQuery(target);
+			Cypress::Server* server = g_program->GetServer();
+
+			if (method == "GET" && path == "/health")
+			{
+				SendJson(clientSocket, 200, "OK", { {"ok", true} });
+				return;
+			}
+
+			if (method == "GET" && path == "/v1/status")
+			{
+				nlohmann::json result =
+				{
+					{"ok", true},
+					{"running", server && server->GetRunning()},
+					{"queuedCommands", server ? server->GetExternalCommandQueueSize() : 0},
+					{"latestLogId", Cypress_GetLatestServerLogId()}
+				};
+				SendJson(clientSocket, 200, "OK", result);
+				return;
+			}
+
+			if (method == "GET" && path == "/v1/messages")
+			{
+				uint64_t since = 0;
+				size_t limit = 100;
+
+				auto sinceIt = query.find("since");
+				if (sinceIt != query.end())
+					since = strtoull(sinceIt->second.c_str(), nullptr, 10);
+				auto limitIt = query.find("limit");
+				if (limitIt != query.end())
+					limit = (size_t)strtoull(limitIt->second.c_str(), nullptr, 10);
+
+				limit = std::clamp(limit, (size_t)1, (size_t)500);
+				auto logs = Cypress_GetServerLogsSince(since, limit);
+				nlohmann::json messages = nlohmann::json::array();
+				for (const auto& entry : logs)
+				{
+					messages.push_back({
+						{"id", entry.first},
+						{"text", entry.second}
+						});
+				}
+
+				SendJson(clientSocket, 200, "OK", {
+					{"ok", true},
+					{"messages", messages},
+					{"latestLogId", Cypress_GetLatestServerLogId()}
+					});
+				return;
+			}
+
+			if (method == "POST" && path == "/v1/command")
+			{
+				std::string cmd;
+				try
+				{
+					nlohmann::json input = nlohmann::json::parse(body);
+					if (input.contains("cmd") && input["cmd"].is_string())
+						cmd = input["cmd"].get<std::string>();
+				}
+				catch (...)
+				{
+					cmd.clear();
+				}
+
+				cmd = TrimString(cmd);
+				if (cmd.empty())
+				{
+					SendJson(clientSocket, 400, "Bad Request", { {"ok", false}, {"error", "Missing cmd"} });
+					return;
+				}
+
+				if (!server)
+				{
+					SendJson(clientSocket, 503, "Service Unavailable", { {"ok", false}, {"error", "Server not ready"} });
+					return;
+				}
+
+				server->QueueExternalCommand(cmd);
+				SendJson(clientSocket, 202, "Accepted", { {"ok", true}, {"queued", true}, {"cmd", cmd} });
+				return;
+			}
+
+			SendJson(clientSocket, 404, "Not Found", { {"ok", false}, {"error", "Unknown endpoint"} });
+		}
+
+		void Run()
+		{
+			SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (listenSocket == INVALID_SOCKET)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "API server socket create failed ({})", WSAGetLastError());
+				m_running = false;
+				return;
+			}
+
+			sockaddr_in addr{};
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons((u_short)m_port);
+			if (inet_pton(AF_INET, m_bindAddress.c_str(), &addr.sin_addr) != 1)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "Invalid API bind address '{}'", m_bindAddress);
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			int opt = 1;
+			setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+			if (bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "API server bind failed on {}:{} ({})", m_bindAddress, m_port, WSAGetLastError());
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "API server listen failed ({})", WSAGetLastError());
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			m_listenSocket = listenSocket;
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "Control API listening on http://{}:{}", m_bindAddress, m_port);
+
+			while (m_running)
+			{
+				sockaddr_in clientAddr{};
+				int clientAddrLen = sizeof(clientAddr);
+				SOCKET clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &clientAddrLen);
+				if (clientSocket == INVALID_SOCKET)
+				{
+					if (m_running)
+						CYPRESS_LOGMESSAGE(LogLevel::Warning, "API accept failed ({})", WSAGetLastError());
+					break;
+				}
+
+				HandleClient(clientSocket);
+				closesocket(clientSocket);
+			}
+
+			SOCKET old = m_listenSocket.exchange(INVALID_SOCKET);
+			if (old != INVALID_SOCKET)
+				closesocket(old);
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "Control API stopped");
+			m_running = false;
+		}
+
+		std::string m_bindAddress;
+		int m_port;
+		std::string m_token;
+		std::atomic<bool> m_running;
+		std::atomic<SOCKET> m_listenSocket;
+		std::thread m_thread;
+	};
+}
+
 namespace Cypress
 {
 	void Server::ServerRestartLevel(fb::ConsoleContext& cc)
@@ -374,6 +805,58 @@ namespace Cypress
 
 	Server::~Server()
 	{
+		if (g_apiControlServer)
+		{
+			g_apiControlServer->Stop();
+			g_apiControlServer.reset();
+		}
+	}
+
+	bool Server::ExecuteServerCommandLine(const std::string& commandLine)
+	{
+		const std::string trimmed = TrimString(commandLine);
+		if (trimmed.empty())
+			return false;
+
+		const bool executed = TryExecuteServerCommandLineInternal(trimmed);
+		if (!executed)
+		{
+			CYPRESS_LOGTOSERVER(LogLevel::Warning, "Unknown command: {}", trimmed.c_str());
+			return false;
+		}
+		return true;
+	}
+
+	void Server::QueueExternalCommand(const std::string& commandLine)
+	{
+		const std::string trimmed = TrimString(commandLine);
+		if (trimmed.empty())
+			return;
+		std::scoped_lock lock(m_externalCommandQueueMutex);
+		m_externalCommandQueue.push_back(trimmed);
+	}
+
+	size_t Server::GetExternalCommandQueueSize()
+	{
+		std::scoped_lock lock(m_externalCommandQueueMutex);
+		return m_externalCommandQueue.size();
+	}
+
+	void Server::ProcessExternalCommands()
+	{
+		std::deque<std::string> commands;
+		{
+			std::scoped_lock lock(m_externalCommandQueueMutex);
+			if (m_externalCommandQueue.empty())
+				return;
+			commands.swap(m_externalCommandQueue);
+		}
+
+		for (const auto& command : commands)
+		{
+			CYPRESS_LOGTOSERVER(LogLevel::Info, "[API] {}", command.c_str());
+			ExecuteServerCommandLine(command);
+		}
 	}
 
 	void Server::UpdateStatus(void* fbServerInstance, float deltaTime)
@@ -605,6 +1088,29 @@ namespace Cypress
 		fb_spawnServer(thisPtr, spawnInfo);
 
 		g_program->GetGameModule()->RegisterCommands();
+		const char* startupCommand = fb::ExecutionContext::getOptionValue("startupCommand");
+		if (startupCommand && startupCommand[0] != '\0')
+		{
+			ExecuteServerCommandLine(startupCommand);
+		}
+
+		bool enableApi = fb::ExecutionContext::getOptionValue("enableApi") != nullptr
+			|| fb::ExecutionContext::getOptionValue("apiPort") != nullptr;
+		if (enableApi && !g_apiControlServer)
+		{
+			const char* apiBind = fb::ExecutionContext::getOptionValue("apiBind", "127.0.0.1");
+			const char* apiPortStr = fb::ExecutionContext::getOptionValue("apiPort", "8787");
+			const char* apiToken = fb::ExecutionContext::getOptionValue("apiToken", "");
+			int apiPort = atoi(apiPortStr);
+			if (apiPort <= 0 || apiPort > 65535)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Warning, "Invalid -apiPort '{}', using 8787", apiPortStr);
+				apiPort = 8787;
+			}
+
+			g_apiControlServer = std::make_unique<ApiControlServer>(apiBind, apiPort, apiToken);
+			g_apiControlServer->Start();
+		}
 
 		g_program->GetServer()->m_banlist.LoadFromFile("bans.json");
 		ServerPeer* peer = ServerGameContext::GetInstance()->m_serverPeer;
