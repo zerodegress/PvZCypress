@@ -285,17 +285,23 @@ DEFINE_HOOK(
 	eastl::string& reasonText
 )
 {
+	const char* playerName = thisPtr->m_name ? thisPtr->m_name : "";
+	const int reasonCode = static_cast<int>(reason);
+	const char* reasonName = (reasonCode >= 0 && reasonCode < static_cast<int>(fb::SecureReason_Count))
+		? fb::SecureReason_toString[reasonCode]
+		: "Unknown";
+
 	CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has left the server (Reason: {}, {})",
 		thisPtr->getPlayerId(),
-		thisPtr->m_name,
+		playerName,
 		reasonText.empty() ? "None provided" : reasonText.c_str(),
-		fb::SecureReason_toString[reason]);
+		reasonName);
 	Cypress_PublishServerEvent("player.left", "hook.fb_ServerPlayer_disconnect",
 		nlohmann::json({
 			{"playerId", thisPtr->getPlayerId()},
-			{"name", thisPtr->m_name.c_str()},
-			{"reasonCode", (int)reason},
-			{"reasonName", fb::SecureReason_toString[reason]},
+			{"name", playerName},
+			{"reasonCode", reasonCode},
+			{"reasonName", reasonName},
 			{"reasonText", reasonText.empty() ? "" : reasonText.c_str()}
 			}).dump());
 
