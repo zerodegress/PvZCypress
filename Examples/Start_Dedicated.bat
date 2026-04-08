@@ -14,10 +14,6 @@ start GW2.Main_Win64_Retail.exe ^
 #-dataPath "D:\Origin Games\Garden Warfare 2 Server\ModData\Default" ^
 #-usePlaylist ^
 #-playlistFilename playtest_lov.json ^
-#-enableApi ^
-#-apiBind 127.0.0.1 ^
-#-apiPort 8787 ^
-#-apiToken changeme ^
 -allowMultipleInstances ^
 -serverInstancePath "./Instance/" ^
 -enableServerLog ^
@@ -41,3 +37,4 @@ start GW2.Main_Win64_Retail.exe ^
 -Online.PeerBackend Backend_Local ^
 -PVZServer.MapSequencerEnabled false ^
 -Network.MaxClientCount 48
+

@@ -3,9 +3,6 @@
 #include <Kyber/SocketManager.h>
 #include <ServerBanlist.h>
 #include <ServerPlaylist.h>
-#include <deque>
-#include <mutex>
-#include <string>
 
 #include <fb/Engine/ConsoleContext.h>
 #include <fb/Engine/LevelSetup.h>
@@ -59,15 +56,11 @@ namespace Cypress
 		ServerBanlist* GetServerBanlist() { return &m_banlist; }
 		ServerPlaylist* GetServerPlaylist() { return &m_playlist; }
 
-			void LoadPlaylistSetup(const PlaylistLevelSetup* nextSetup);
-			void LevelSetupFromPlaylistSetup(fb::LevelSetup* setup, const PlaylistLevelSetup* playlistSetup);
-			void ApplySettingsFromPlaylistSetup(const PlaylistLevelSetup* playlistSetup);
-			void QueueExternalCommand(const std::string& commandLine);
-			void ProcessExternalCommands();
-			size_t GetExternalCommandQueueSize();
-			static bool ExecuteServerCommandLine(const std::string& commandLine);
+		void LoadPlaylistSetup(const PlaylistLevelSetup* nextSetup);
+		void LevelSetupFromPlaylistSetup(fb::LevelSetup* setup, const PlaylistLevelSetup* playlistSetup);
+		void ApplySettingsFromPlaylistSetup(const PlaylistLevelSetup* playlistSetup);
 
-			static void InitDedicatedServer(void* thisPtr);
+		static void InitDedicatedServer(void* thisPtr);
 
 		// Commands
 		static void ServerRestartLevel(fb::ConsoleContext& cc);
@@ -94,12 +87,10 @@ namespace Cypress
 		bool m_loadRequestFromLevelControl;
 		std::string m_statusCol1;
 		std::string m_statusCol2;
-			ServerBanlist m_banlist;
-			ServerPlaylist m_playlist;
-			std::deque<std::string> m_externalCommandQueue;
-			std::mutex m_externalCommandQueueMutex;
+		ServerBanlist m_banlist;
+		ServerPlaylist m_playlist;
 
-			friend class Program;
-		};
+		friend class Program;
+	};
 }
 #endif
