@@ -169,10 +169,10 @@ namespace
 		sockaddr_in addr{};
 		addr.sin_family = AF_INET;
 		addr.sin_port = htons((u_short)port);
-		const char* bind = bindAddress ? bindAddress : "127.0.0.1";
-		if (inet_pton(AF_INET, bind, &addr.sin_addr) != 1)
+		const char* bindAddr = bindAddress ? bindAddress : "127.0.0.1";
+		if (inet_pton(AF_INET, bindAddr, &addr.sin_addr) != 1)
 		{
-			CYPRESS_LOGMESSAGE(LogLevel::Error, "Invalid TCP API bind address '{}'", bind);
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "Invalid TCP API bind address '{}'", bindAddr);
 			closesocket(listenSocket);
 			return false;
 		}
@@ -182,9 +182,9 @@ namespace
 
 		int opt = 1;
 		setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
-		if (bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+		if (::bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
 		{
-			CYPRESS_LOGMESSAGE(LogLevel::Error, "TCP API bind failed on {}:{} ({})", bind, port, WSAGetLastError());
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "TCP API bind failed on {}:{} ({})", bindAddr, port, WSAGetLastError());
 			closesocket(listenSocket);
 			return false;
 		}
@@ -197,7 +197,7 @@ namespace
 		}
 
 		g_tcpListenSocket = listenSocket;
-		CYPRESS_LOGMESSAGE(LogLevel::Info, "TCP API listening on {}:{}", bind, port);
+		CYPRESS_LOGMESSAGE(LogLevel::Info, "TCP API listening on {}:{}", bindAddr, port);
 		return true;
 	}
 
