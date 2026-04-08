@@ -200,27 +200,9 @@ DEFINE_HOOK(
 		server->ApplySettingsFromPlaylistSetup(nextSetup);
 		}
 
-		const char* levelName = "";
-		const char* gameMode = "";
-		const char* hostedMode = "";
-		const char* tod = "";
-		if (levelSetup)
-		{
-			levelName = levelSetup->m_name.length() > 0 ? levelSetup->m_name.c_str() : "";
-			const char* gameModeOpt = levelSetup->getInclusionOption("GameMode");
-			const char* hostedModeOpt = levelSetup->getInclusionOption("HostedMode");
-			const char* todOpt = levelSetup->getInclusionOption("TOD");
-			gameMode = gameModeOpt ? gameModeOpt : "";
-			hostedMode = hostedModeOpt ? hostedModeOpt : "";
-			tod = todOpt ? todOpt : "";
-		}
-
 	Cypress_PublishServerEvent("level.load_requested", "hook.fb_ServerLoadLevelMessage_post",
 		nlohmann::json({
-			{"level", levelName},
-			{"gameMode", gameMode},
-			{"hostedMode", hostedMode},
-			{"tod", tod},
+			{"hasLevelSetup", levelSetup != nullptr},
 			{"fadeOut", fadeOut},
 			{"forceReloadResources", forceReloadResources}
 			}).dump());
@@ -236,6 +218,9 @@ DEFINE_HOOK(
 	void* msg
 )
 {
+	if (!msg)
+		return Orig_fb_ServerConnection_onCreatePlayerMsg(thisPtr, msg);
+
 	const char* playerName = ptrread<const char*>(msg, 0x48);
 	const char* safePlayerName = playerName ? playerName : "";
 	int nameLen = (int)strlen(safePlayerName);
@@ -279,7 +264,10 @@ DEFINE_HOOK(
 	const char* nickname
 	)
 	{
-		if (!player->isAIPlayer())
+		if (!player)
+			return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
+
+			if (!player->isAIPlayer())
 		{
 			const char* joinedName = nickname ? nickname : (player->m_name ? player->m_name : "");
 			CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), joinedName);
@@ -302,6 +290,9 @@ DEFINE_HOOK(
 	eastl::string& reasonText
 )
 {
+	if (!thisPtr)
+		return;
+
 	const char* playerName = thisPtr->m_name ? thisPtr->m_name : "";
 	const int reasonCode = static_cast<int>(reason);
 	const char* reasonName = (reasonCode >= 0 && reasonCode < static_cast<int>(fb::SecureReason_Count))
