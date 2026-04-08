@@ -199,12 +199,28 @@ DEFINE_HOOK(
 		server->LevelSetupFromPlaylistSetup(levelSetup, nextSetup);
 		server->ApplySettingsFromPlaylistSetup(nextSetup);
 		}
+
+		const char* levelName = "";
+		const char* gameMode = "";
+		const char* hostedMode = "";
+		const char* tod = "";
+		if (levelSetup)
+		{
+			levelName = levelSetup->m_name.length() > 0 ? levelSetup->m_name.c_str() : "";
+			const char* gameModeOpt = levelSetup->getInclusionOption("GameMode");
+			const char* hostedModeOpt = levelSetup->getInclusionOption("HostedMode");
+			const char* todOpt = levelSetup->getInclusionOption("TOD");
+			gameMode = gameModeOpt ? gameModeOpt : "";
+			hostedMode = hostedModeOpt ? hostedModeOpt : "";
+			tod = todOpt ? todOpt : "";
+		}
+
 	Cypress_PublishServerEvent("level.load_requested", "hook.fb_ServerLoadLevelMessage_post",
 		nlohmann::json({
-			{"level", levelSetup && levelSetup->m_name.length() > 0 ? levelSetup->m_name.c_str() : ""},
-			{"gameMode", levelSetup ? levelSetup->getInclusionOption("GameMode") : ""},
-			{"hostedMode", levelSetup ? levelSetup->getInclusionOption("HostedMode") : ""},
-			{"tod", levelSetup ? levelSetup->getInclusionOption("TOD") : ""},
+			{"level", levelName},
+			{"gameMode", gameMode},
+			{"hostedMode", hostedMode},
+			{"tod", tod},
 			{"fadeOut", fadeOut},
 			{"forceReloadResources", forceReloadResources}
 			}).dump());
@@ -221,7 +237,8 @@ DEFINE_HOOK(
 )
 {
 	const char* playerName = ptrread<const char*>(msg, 0x48);
-	int nameLen = strlen(playerName);
+	const char* safePlayerName = playerName ? playerName : "";
+	int nameLen = (int)strlen(safePlayerName);
 	if (nameLen < 3 || nameLen > 32)
 	{
 		thisPtr->m_shouldDisconnect = true;
@@ -229,7 +246,7 @@ DEFINE_HOOK(
 		thisPtr->m_reasonText = "Invalid Username Length";
 	}
 
-	for (const char* p = playerName; *p != '\0'; ++p)
+	for (const char* p = safePlayerName; *p != '\0'; ++p)
 	{
 		if (iscntrl(static_cast<unsigned char>(*p)))
 		{
@@ -240,10 +257,10 @@ DEFINE_HOOK(
 		}
 	}
 
-	CYPRESS_LOGTOSERVER(LogLevel::Info, "{} is trying to join from machine {}", playerName, thisPtr->m_machineId.c_str());
+	CYPRESS_LOGTOSERVER(LogLevel::Info, "{} is trying to join from machine {}", safePlayerName, thisPtr->m_machineId.c_str());
 	Cypress_PublishServerEvent("player.connect_attempt", "hook.fb_ServerConnection_onCreatePlayerMsg",
 		nlohmann::json({
-			{"playerName", playerName ? playerName : ""},
+			{"playerName", safePlayerName},
 			{"machineId", thisPtr->m_machineId.c_str()},
 			{"shouldDisconnect", thisPtr->m_shouldDisconnect},
 			{"disconnectReason", thisPtr->m_disconnectReason},
