@@ -8,6 +8,7 @@
 #include <mutex>
 #include <deque>
 #include <vector>
+#include <fstream>
 
 HWND* g_listBox = (HWND*)OFFSET_LISTBOX;
 
@@ -17,6 +18,9 @@ namespace
 	std::deque<std::pair<uint64_t, std::string>> g_serverLogBuffer;
 	uint64_t g_serverLogCounter = 0;
 	constexpr size_t SERVER_LOG_BUFFER_LIMIT = 2000;
+	std::mutex g_serverLogFileMutex;
+	std::ofstream g_serverLogFile;
+	bool g_serverLogFileOpenAttempted = false;
 
 	std::mutex g_serverEventBufferMutex;
 	std::deque<CypressServerEvent> g_serverEventBuffer;
@@ -30,6 +34,22 @@ namespace
 		if (g_serverLogBuffer.size() > SERVER_LOG_BUFFER_LIMIT)
 		{
 			g_serverLogBuffer.pop_front();
+		}
+	}
+
+	void AppendServerLogToFile(const std::string& formattedLog)
+	{
+		std::scoped_lock lock(g_serverLogFileMutex);
+		if (!g_serverLogFileOpenAttempted)
+		{
+			g_serverLogFileOpenAttempted = true;
+			g_serverLogFile.open("cypress-log.txt", std::ios::out | std::ios::app);
+		}
+
+		if (g_serverLogFile.is_open())
+		{
+			g_serverLogFile << formattedLog << '\n';
+			g_serverLogFile.flush();
 		}
 	}
 
@@ -59,6 +79,7 @@ void Cypress_LogToServer(const char* msg, const char* fileName, int lineNumber, 
 #endif
 	std::string formattedLog = std::format("{} [{}] [{}:{}] {}", timePrefix, Cypress_LogLevelToStr(logLevel), filePath, lineNumber, msg);
 	AddBufferedServerLog(formattedLog);
+	AppendServerLogToFile(formattedLog);
 
 	//bool* m_logOutputEnabled = (bool*)(OFFSET_LOGOUTPUTENABLED);
 	if (*g_listBox == NULL)
