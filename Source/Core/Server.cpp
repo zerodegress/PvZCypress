@@ -3,6 +3,8 @@
 #include "Server.h"
 #include <string>
 #include <sstream>
+#include <fstream>
+#include <cstdio>
 #include <Core/Program.h>
 #include <Core/Settings.h>
 #include <fb/Engine/LevelSetup.h>
@@ -21,6 +23,70 @@
 using namespace fb;
 
 #if(HAS_DEDICATED_SERVER)
+namespace
+{
+	using ServerConsoleFn = void(*)(fb::ConsoleContext& cc);
+
+	struct CommandMapEntry
+	{
+		const char* name;
+		ServerConsoleFn fn;
+	};
+
+	static const CommandMapEntry kServerCommandMap[] =
+	{
+		{ "RestartLevel", &Cypress::Server::ServerRestartLevel },
+		{ "LoadLevel", &Cypress::Server::ServerLoadLevel },
+		{ "KickPlayer", &Cypress::Server::ServerKickPlayer },
+		{ "KickPlayerById", &Cypress::Server::ServerKickPlayerById },
+		{ "BanPlayer", &Cypress::Server::ServerBanPlayer },
+		{ "BanPlayerById", &Cypress::Server::ServerBanPlayerById },
+		{ "Say", &Cypress::Server::ServerSay },
+#ifdef CYPRESS_GW2
+		{ "SayToPlayer", &Cypress::Server::ServerSayToPlayer },
+#endif
+		{ "LoadNextPlaylistSetup", &Cypress::Server::ServerLoadNextPlaylistSetup },
+		{ "UnbanPlayer", &Cypress::Server::ServerUnbanPlayer }
+	};
+
+	static std::string TrimString(std::string value)
+	{
+		size_t start = value.find_first_not_of(" \t\r\n");
+		if (start == std::string::npos)
+			return "";
+		size_t end = value.find_last_not_of(" \t\r\n");
+		return value.substr(start, end - start + 1);
+	}
+
+	static std::string EscapeJsonString(const std::string& value)
+	{
+		std::string escaped;
+		escaped.reserve(value.size() + 16);
+		for (unsigned char c : value)
+		{
+			switch (c)
+			{
+			case '\\': escaped += "\\\\"; break;
+			case '"': escaped += "\\\""; break;
+			case '\n': escaped += "\\n"; break;
+			case '\r': escaped += "\\r"; break;
+			case '\t': escaped += "\\t"; break;
+			default:
+				if (c < 0x20)
+				{
+					escaped += '?';
+				}
+				else
+				{
+					escaped += (char)c;
+				}
+				break;
+			}
+		}
+		return escaped;
+	}
+}
+
 namespace Cypress
 {
 	void Server::ServerRestartLevel(fb::ConsoleContext& cc)
@@ -366,18 +432,148 @@ namespace Cypress
 		, m_loadRequestFromLevelControl(false)
 		, m_statusCol1()
 		, m_statusCol2()
+		, m_lastCommandPollMs(0)
+		, m_lastStatusWriteMs(0)
+		, m_commandQueueReadOffset(0)
+		, m_commandQueuePath("cypress-cmd.queue")
+		, m_statusPath("cypress-status.json")
 		, m_banlist()
 		, m_playlist()
 	{
-
+		{
+			std::ifstream cmdFile(m_commandQueuePath, std::ios::binary | std::ios::ate);
+			if (cmdFile.good())
+			{
+				m_commandQueueReadOffset = (size_t)cmdFile.tellg();
+			}
+			else
+			{
+				std::ofstream createFile(m_commandQueuePath, std::ios::app);
+			}
+		}
 	}
 
 	Server::~Server()
 	{
 	}
 
+	bool Server::ExecuteServerCommandLine(const std::string& commandLine)
+	{
+		const std::string trimmed = TrimString(commandLine);
+		if (trimmed.empty())
+			return false;
+
+		size_t whitespacePos = trimmed.find_first_of(" \t");
+		std::string commandName = whitespacePos == std::string::npos ? trimmed : trimmed.substr(0, whitespacePos);
+		std::string commandArgs = whitespacePos == std::string::npos ? "" : trimmed.substr(whitespacePos + 1);
+
+		const char* methodName = commandName.c_str();
+		constexpr const char* groupName = "Server";
+		if (commandName.rfind("Server.", 0) == 0)
+		{
+			methodName += 7;
+		}
+
+		for (const CommandMapEntry& entry : kServerCommandMap)
+		{
+			if (strcmp(methodName, entry.name) != 0)
+				continue;
+
+			fb::ConsoleContext cc{};
+			cc.m_args = commandArgs.empty() ? const_cast<char*>("") : commandArgs.data();
+			cc.m_groupName = const_cast<char*>(groupName);
+			cc.m_method = const_cast<char*>(entry.name);
+			entry.fn(cc);
+			return true;
+		}
+
+		CYPRESS_LOGTOSERVER(LogLevel::Warning, "Unknown command: {}", trimmed.c_str());
+		return false;
+	}
+
+	void Server::ProcessMiniApiCommandQueue()
+	{
+		unsigned int now = GetSystemTime();
+		if (m_lastCommandPollMs != 0 && now - m_lastCommandPollMs < 200)
+			return;
+		m_lastCommandPollMs = now;
+
+		std::ifstream file(m_commandQueuePath, std::ios::binary);
+		if (!file.good())
+			return;
+
+		file.seekg(0, std::ios::end);
+		size_t fileSize = (size_t)file.tellg();
+		if (m_commandQueueReadOffset > fileSize)
+			m_commandQueueReadOffset = 0;
+		file.seekg((std::streamoff)m_commandQueueReadOffset, std::ios::beg);
+
+		std::string line;
+		while (std::getline(file, line))
+		{
+			if (!line.empty() && line.back() == '\r')
+				line.pop_back();
+			if (line.empty())
+				continue;
+
+			size_t tabPos = line.find('\t');
+			std::string cmd = tabPos == std::string::npos ? line : line.substr(tabPos + 1);
+			cmd = TrimString(cmd);
+			if (cmd.empty())
+				continue;
+
+			CYPRESS_LOGTOSERVER(LogLevel::Info, "[MiniAPI] {}", cmd.c_str());
+			ExecuteServerCommandLine(cmd);
+		}
+
+		std::streamoff endPos = file.tellg();
+		if (endPos < 0)
+			m_commandQueueReadOffset = fileSize;
+		else
+			m_commandQueueReadOffset = (size_t)endPos;
+	}
+
+	void Server::WriteMiniApiStatusFile(
+		unsigned int sec,
+		int fps,
+		const std::string& playerCountStr,
+		int ghostCount,
+		const char* levelName,
+		const char* gameMode,
+		const char* hostedMode,
+		const char* timeOfDay,
+		const char* platformName,
+		size_t memoryMb)
+	{
+		const std::string tmpPath = m_statusPath + ".tmp";
+		std::ofstream out(tmpPath, std::ios::out | std::ios::trunc);
+		if (!out.good())
+			return;
+
+		out << "{\n"
+			<< "  \"running\": " << (GetRunning() ? "true" : "false") << ",\n"
+			<< "  \"uptimeSec\": " << sec << ",\n"
+			<< "  \"fps\": " << fps << ",\n"
+			<< "  \"playerCount\": \"" << EscapeJsonString(playerCountStr) << "\",\n"
+			<< "  \"ghostCount\": " << ghostCount << ",\n"
+			<< "  \"memoryMb\": " << memoryMb << ",\n"
+			<< "  \"level\": \"" << EscapeJsonString(levelName ? levelName : "") << "\",\n"
+			<< "  \"gameMode\": \"" << EscapeJsonString(gameMode ? gameMode : "") << "\",\n"
+			<< "  \"hostedMode\": \"" << EscapeJsonString(hostedMode ? hostedMode : "") << "\",\n"
+			<< "  \"tod\": \"" << EscapeJsonString(timeOfDay ? timeOfDay : "") << "\",\n"
+			<< "  \"platform\": \"" << EscapeJsonString(platformName ? platformName : "") << "\",\n"
+			<< "  \"statusLine1\": \"" << EscapeJsonString(m_statusCol1) << "\",\n"
+			<< "  \"statusLine2\": \"" << EscapeJsonString(m_statusCol2) << "\"\n"
+			<< "}\n";
+		out.close();
+		std::remove(m_statusPath.c_str());
+		std::rename(tmpPath.c_str(), m_statusPath.c_str());
+	}
+
 	void Server::UpdateStatus(void* fbServerInstance, float deltaTime)
 	{
+		ProcessMiniApiCommandQueue();
+
 		static unsigned int startSystemTime = GetSystemTime();
 		unsigned int sec = (GetSystemTime() - startSystemTime) / 1000;
 		unsigned int min = (sec / 60) % 60;
@@ -491,6 +687,35 @@ namespace Cypress
 		{
 			tick = fps;
 			g_program->GetServer()->SetStatusUpdated(false);
+		}
+
+		unsigned int now = GetSystemTime();
+		if (m_lastStatusWriteMs == 0 || now - m_lastStatusWriteMs >= 1000)
+		{
+			m_lastStatusWriteMs = now;
+			const char* levelNameForFile = "No level";
+			const char* gameModeForFile = "";
+			const char* hostedModeForFile = "";
+			const char* todForFile = "";
+			if (setup.m_name.length() > 0)
+			{
+				levelNameForFile = extractFileName(setup.m_name.c_str());
+				gameModeForFile = setup.getInclusionOption("GameMode");
+				hostedModeForFile = setup.getInclusionOption("HostedMode");
+				todForFile = setup.getInclusionOption("TOD");
+			}
+
+			WriteMiniApiStatusFile(
+				sec,
+				(int)fps,
+				playerCountStr,
+				ghostcount,
+				levelNameForFile,
+				gameModeForFile,
+				hostedModeForFile,
+				todForFile,
+				platformName,
+				GetMemoryUsage());
 		}
 	}
 
