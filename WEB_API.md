@@ -79,6 +79,27 @@ Each event contains:
 - `source`
 - `payload` (JSON object)
 
+Response shape:
+
+```json
+{
+  "ok": true,
+  "events": [
+    {
+      "id": 101,
+      "ts": 1775620000123,
+      "type": "player.joined",
+      "source": "hook.fb_ServerPlayerManager_addPlayer",
+      "payload": {
+        "playerId": 4,
+        "name": "Alice"
+      }
+    }
+  ],
+  "latestEventId": 120
+}
+```
+
 ### `POST /v1/command`
 
 Queue a server command for execution on the server update thread.
@@ -115,6 +136,64 @@ Response:
 - `player.connect_attempt`: player connection/create-player message observed.
 - `player.joined`: player added to server.
 - `player.left`: player disconnected from server.
+
+## ServerEvent Payload Reference
+
+`command.console_submitted`
+- `cmd` (string)
+
+`command.api_queued`
+- `cmd` (string)
+
+`command.api_executed`
+- `cmd` (string)
+- `ok` (boolean)
+
+`command.startup_requested`
+- `cmd` (string)
+
+`command.executed`
+- `cmd` (string)
+
+`command.unknown`
+- `cmd` (string)
+
+`level.load_requested`
+- `level` (string)
+- `gameMode` (string)
+- `hostedMode` (string)
+- `tod` (string)
+- `fadeOut` (boolean)
+- `forceReloadResources` (boolean)
+
+`player.connect_attempt`
+- `playerName` (string)
+- `machineId` (string)
+- `shouldDisconnect` (boolean)
+- `disconnectReason` (number)
+- `disconnectReasonText` (string)
+
+`player.joined`
+- `playerId` (number)
+- `name` (string)
+
+`player.left`
+- `playerId` (number)
+- `name` (string)
+- `reasonCode` (number)
+- `reasonName` (string)
+- `reasonText` (string)
+
+## Event Cursor Semantics
+
+- `since` is **exclusive**.  
+  Example: if last processed event is `id=120`, next request should use `since=120`.
+- Use `latestEventId` from responses as your checkpoint.
+- Recommended polling loop:
+1. On startup, call `/v1/status` and store `latestEventId` (or use `0` to replay buffered history).
+2. Poll `/v1/events?since=<checkpoint>&limit=100`.
+3. Process events in ascending order of `id`.
+4. Update checkpoint to response `latestEventId` (or the last event `id`).
 
 ## Curl Examples
 
