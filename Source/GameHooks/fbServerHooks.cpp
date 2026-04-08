@@ -5,8 +5,10 @@
 #include <sstream>
 #include <Core/Program.h>
 #include <Core/Console/ConsoleFunctions.h>
+#include <Core/Logging.h>
 #include <fb/Engine/Server.h>
 #include <fb/Engine/ServerGameContext.h>
+#include <json.hpp>
 
 #if(HAS_DEDICATED_SERVER)
 DEFINE_HOOK(
@@ -43,9 +45,9 @@ DEFINE_HOOK(
 	bool updated = Orig_fb_Server_update(thisPtr, params);
 	if (g_program->IsServer())
 	{
-		
-		Cypress::Server* server = g_program->GetServer();
-		server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
+			Cypress::Server* server = g_program->GetServer();
+			server->ProcessExternalCommands();
+			server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
 
 		bool statusUpdated = !server->GetStatusUpdated();
 		server->SetStatusUpdated(true);
@@ -91,14 +93,16 @@ DEFINE_HOOK(
 
 	switch (msg)
 	{
-	case WM_KEYDOWN:
-		switch (wParam)
-		{
-		case VK_RETURN:
-			CYPRESS_LOGTOSERVER(LogLevel::Info, "{}", g_commandBoxCommand.c_str());
-			break;
+		case WM_KEYDOWN:
+			switch (wParam)
+			{
+			case VK_RETURN:
+				CYPRESS_LOGTOSERVER(LogLevel::Info, "{}", g_commandBoxCommand.c_str());
+				Cypress_PublishServerEvent("command.console_submitted", "hook.fb_editBoxWndProcProxy",
+					nlohmann::json({ {"cmd", g_commandBoxCommand} }).dump());
+				break;
+			}
 		}
-	}
 
 	return ret;
 }
@@ -187,16 +191,25 @@ DEFINE_HOOK(
 	bool fadeOut,
 	bool forceReloadResources
 )
-{
-	Cypress::Server* server = g_program->GetServer();
-	if (server->GetIsLoadRequestFromLevelControl() && server->IsUsingPlaylist())
+	{
+		Cypress::Server* server = g_program->GetServer();
+		if (server->GetIsLoadRequestFromLevelControl() && server->IsUsingPlaylist())
 	{
 		const auto nextSetup = server->GetServerPlaylist()->GetNextSetup();
 		server->LevelSetupFromPlaylistSetup(levelSetup, nextSetup);
 		server->ApplySettingsFromPlaylistSetup(nextSetup);
+		}
+	Cypress_PublishServerEvent("level.load_requested", "hook.fb_ServerLoadLevelMessage_post",
+		nlohmann::json({
+			{"level", levelSetup && levelSetup->m_name.length() > 0 ? levelSetup->m_name.c_str() : ""},
+			{"gameMode", levelSetup ? levelSetup->getInclusionOption("GameMode") : ""},
+			{"hostedMode", levelSetup ? levelSetup->getInclusionOption("HostedMode") : ""},
+			{"tod", levelSetup ? levelSetup->getInclusionOption("TOD") : ""},
+			{"fadeOut", fadeOut},
+			{"forceReloadResources", forceReloadResources}
+			}).dump());
+		Orig_fb_ServerLoadLevelMessage_post(levelSetup, fadeOut, forceReloadResources);
 	}
-	Orig_fb_ServerLoadLevelMessage_post(levelSetup, fadeOut, forceReloadResources);
-}
 
 DEFINE_HOOK(
 	fb_ServerConnection_onCreatePlayerMsg,
@@ -228,6 +241,14 @@ DEFINE_HOOK(
 	}
 
 	CYPRESS_LOGTOSERVER(LogLevel::Info, "{} is trying to join from machine {}", playerName, thisPtr->m_machineId.c_str());
+	Cypress_PublishServerEvent("player.connect_attempt", "hook.fb_ServerConnection_onCreatePlayerMsg",
+		nlohmann::json({
+			{"playerName", playerName ? playerName : ""},
+			{"machineId", thisPtr->m_machineId.c_str()},
+			{"shouldDisconnect", thisPtr->m_shouldDisconnect},
+			{"disconnectReason", thisPtr->m_disconnectReason},
+			{"disconnectReasonText", thisPtr->m_reasonText.c_str()}
+			}).dump());
 	return Orig_fb_ServerConnection_onCreatePlayerMsg(thisPtr, msg);
 }
 
@@ -239,14 +260,20 @@ DEFINE_HOOK(
 	fb::ServerPlayerManager* thisPtr,
 	fb::ServerPlayer* player,
 	const char* nickname
-)
-{
-	if (!player->isAIPlayer())
+	)
 	{
-		CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), nickname);
+		if (!player->isAIPlayer())
+		{
+			const char* joinedName = nickname ? nickname : (player->m_name ? player->m_name : "");
+			CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), joinedName);
+			Cypress_PublishServerEvent("player.joined", "hook.fb_ServerPlayerManager_addPlayer",
+				nlohmann::json({
+					{"playerId", player->getPlayerId()},
+					{"name", joinedName}
+					}).dump());
+		}
+		return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
 	}
-	return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
-}
 
 DEFINE_HOOK(
 	fb_ServerPlayer_disconnect,
@@ -258,11 +285,25 @@ DEFINE_HOOK(
 	eastl::string& reasonText
 )
 {
+	const char* playerName = thisPtr->m_name ? thisPtr->m_name : "";
+	const int reasonCode = static_cast<int>(reason);
+	const char* reasonName = (reasonCode >= 0 && reasonCode < static_cast<int>(fb::SecureReason_Count))
+		? fb::SecureReason_toString[reasonCode]
+		: "Unknown";
+
 	CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has left the server (Reason: {}, {})",
 		thisPtr->getPlayerId(),
-		thisPtr->m_name,
+		playerName,
 		reasonText.empty() ? "None provided" : reasonText.c_str(),
-		fb::SecureReason_toString[reason]);
+		reasonName);
+	Cypress_PublishServerEvent("player.left", "hook.fb_ServerPlayer_disconnect",
+		nlohmann::json({
+			{"playerId", thisPtr->getPlayerId()},
+			{"name", playerName},
+			{"reasonCode", reasonCode},
+			{"reasonName", reasonName},
+			{"reasonText", reasonText.empty() ? "" : reasonText.c_str()}
+			}).dump());
 
 	Orig_fb_ServerPlayer_disconnect(thisPtr, reason, reasonText);
 }
