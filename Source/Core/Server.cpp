@@ -917,6 +917,9 @@ namespace Cypress
 
 	void Server::UpdateStatus(void* fbServerInstance, float deltaTime)
 	{
+		if (!fbServerInstance)
+			return;
+
 		static unsigned int startSystemTime = GetSystemTime();
 		unsigned int sec = (GetSystemTime() - startSystemTime) / 1000;
 		unsigned int min = (sec / 60) % 60;
@@ -929,7 +932,8 @@ namespace Cypress
 
 		m_fbServerInstance = fbServerInstance;
 
-		sumDeltaTime += deltaTime;
+		if (deltaTime > 0.0f)
+			sumDeltaTime += deltaTime;
 		++frameCount;
 
 		if (lastSec != sec)
@@ -942,17 +946,30 @@ namespace Cypress
 			
 		fb::ServerPlayerManager* playerMgr = ptrread<fb::ServerPlayerManager*>(fbServerInstance, CYPRESS_GW_SELECT(0x98, 0xA0));
 		fb::ServerPeer* serverPeer = ptrread<fb::ServerPeer*>(fbServerInstance, CYPRESS_GW_SELECT(0x90, 0x98));
-		
+		if (!playerMgr || !serverPeer)
+			return;
+
 		fb::ServerGhostManager* ghostMgr = serverPeer->GetGhostManager();
-		int ghostcount = ghostMgr->ghostCount();
-		
+		int ghostcount = ghostMgr ? ghostMgr->ghostCount() : 0;
+
 		fb::SettingsManager* settingsManager = fb::SettingsManager::GetInstance();
+		if (!settingsManager)
+			return;
+
+		auto* systemSettings = settingsManager->getContainer<fb::SystemSettings>("Game");
+		auto* networkSettings = settingsManager->getContainer<fb::NetworkSettings>("Network");
+		auto* gameSettings = settingsManager->getContainer<fb::GameSettings>("Game");
+		if (!systemSettings || !networkSettings || !gameSettings)
+			return;
 
 		// +13 to cut off GamePlatform_
-		const char* platformName = fb::toString(settingsManager->getContainer<fb::SystemSettings>("Game")->Platform) + 13;
+		const char* platformNameRaw = fb::toString(systemSettings->Platform);
+		const char* platformName = platformNameRaw ? platformNameRaw : "Unknown";
+		if (strlen(platformName) >= 13)
+			platformName += 13;
 
-		unsigned int maxPlayerCount = settingsManager->getContainer<fb::NetworkSettings>("Network")->MaxClientCount;
-		unsigned int maxSpectatorCount = settingsManager->getContainer<fb::GameSettings>("Game")->MaxSpectatorCount;
+		unsigned int maxPlayerCount = networkSettings->MaxClientCount;
+		unsigned int maxSpectatorCount = gameSettings->MaxSpectatorCount;
 
 		if (serverPeer)
 			maxPlayerCount = std::min(maxPlayerCount, serverPeer->maxClientCount());
@@ -967,6 +984,8 @@ namespace Cypress
 		//not used, but might be useful i guess
 		//std::string aiPlayerCountStr = std::format("{}/{} [{}]", playerMgr->aiPlayerCount(), 64, 64 - (playerMgr->humanPlayerCount() + playerMgr->aiPlayerCount()));
 		
+		int fpsInt = currentDeltaTime > 0.0f ? int(1.0f / currentDeltaTime) : 0;
+
 		g_program->GetServer()->SetStatusColumn1(
 			std::format(
 			"FPS: {} \t\t\t\t"
@@ -974,7 +993,7 @@ namespace Cypress
 			"PlayerCount: {} \t\t\t"
 			"GhostCount: {} \t\t\t"
 			"Memory (CPU): {} MB",
-			int(1.0f / currentDeltaTime),
+			fpsInt,
 			hour,
 			min,
 			sec % 60,
@@ -1001,9 +1020,12 @@ namespace Cypress
 		{
 			//creating a server without any of these set will break the status columns, so we need to make sure they are set to something
 			const char* levelName    = extractFileName(setup.m_name.c_str());
-			const char* gameMode     = strlen(setup.getInclusionOption("GameMode")) > 1 ? setup.getInclusionOption("GameMode") : "\t";
-			const char* hostedMode   = strlen(setup.getInclusionOption("HostedMode")) > 1 ? setup.getInclusionOption("HostedMode") : "\t";
-			const char* timeOfDay    = strlen(setup.getInclusionOption("TOD")) > 1 ? setup.getInclusionOption("TOD") : "\t";
+				const char* gameModeOpt = setup.getInclusionOption("GameMode");
+				const char* hostedModeOpt = setup.getInclusionOption("HostedMode");
+				const char* todOpt = setup.getInclusionOption("TOD");
+				const char* gameMode = (gameModeOpt && strlen(gameModeOpt) > 1) ? gameModeOpt : "\t";
+				const char* hostedMode = (hostedModeOpt && strlen(hostedModeOpt) > 1) ? hostedModeOpt : "\t";
+				const char* timeOfDay = (todOpt && strlen(todOpt) > 1) ? todOpt : "\t";
 
 			g_program->GetServer()->SetStatusColumn2(
 				std::format(
@@ -1025,7 +1047,7 @@ namespace Cypress
 		}
 		
 		static size_t tick = 0;
-		size_t fps = int(1.0f / currentDeltaTime);
+		size_t fps = (size_t)fpsInt;
 		if (tick != fps)
 		{
 			tick = fps;
