@@ -10,6 +10,7 @@ Add launch arguments to your server startup command:
 - `-apiBind 127.0.0.1` bind address, default is `127.0.0.1`
 - `-apiPort 8787` listen port, default is `8787`
 - `-apiToken <token>` optional Bearer token for authentication
+- `-banlistFilename <path>` optional ban list file path, default is `bans.json`
 
 Example:
 

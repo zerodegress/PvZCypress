@@ -23,25 +23,29 @@ public:
         }
     };
 
-    void LoadFromFile(const char* filename)
-    {
-        std::ifstream input(filename);
-        if (input.is_open())
-        {
-            m_filename = filename;
-            nlohmann::json json;
-            input >> json;
+	void LoadFromFile(const char* filename)
+	{
+		m_filename = (filename && filename[0] != '\0') ? filename : "bans.json";
+		m_bannedPlayers.clear();
 
-            for (const auto& jsonEntry : json)
-            {
-                PlayerEntry entry;
-                entry.Name = jsonEntry.at("Name").get<std::string>();
-                entry.MachineId = jsonEntry.at("MachineId").get<std::string>();
-                entry.BanReason = jsonEntry.at("BanReason").get<std::string>();
-                m_bannedPlayers.push_back(entry);
-            }
-        }
-    }
+		std::ifstream input(m_filename);
+		if (!input.is_open())
+		{
+			return;
+		}
+
+		nlohmann::json json;
+		input >> json;
+
+		for (const auto& jsonEntry : json)
+		{
+			PlayerEntry entry;
+			entry.Name = jsonEntry.at("Name").get<std::string>();
+			entry.MachineId = jsonEntry.at("MachineId").get<std::string>();
+			entry.BanReason = jsonEntry.at("BanReason").get<std::string>();
+			m_bannedPlayers.push_back(entry);
+		}
+	}
 
     void SaveToFile()
     {
@@ -55,12 +59,12 @@ public:
                 });
         }
 
-        std::ofstream jsonFile("bans.json");
-        if (jsonFile.is_open())
-        {
-            jsonFile << j.dump(4);
-        }
-    }
+	    std::ofstream jsonFile(m_filename);
+	    if (jsonFile.is_open())
+	    {
+	        jsonFile << j.dump(4);
+	    }
+	}
 
     void AddToList(const char* name, const char* machineId, const char* reasonText)
     {
@@ -127,6 +131,6 @@ public:
     const std::vector<PlayerEntry>& GetBannedPlayers() { return m_bannedPlayers; }
 
 private:
-    const char* m_filename;
-    std::vector<PlayerEntry> m_bannedPlayers;
+	    std::string m_filename = "bans.json";
+	    std::vector<PlayerEntry> m_bannedPlayers;
 };

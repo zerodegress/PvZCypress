@@ -18,6 +18,7 @@ start GW2.Main_Win64_Retail.exe ^
 #-apiBind 127.0.0.1 ^
 #-apiPort 8787 ^
 #-apiToken changeme ^
+#-banlistFilename ".\\Config\\bans.custom.json" ^
 -allowMultipleInstances ^
 -serverInstancePath "./Instance/" ^
 -enableServerLog ^

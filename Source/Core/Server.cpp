@@ -1169,7 +1169,9 @@ namespace Cypress
 			g_apiControlServer->Start();
 		}
 
-		g_program->GetServer()->m_banlist.LoadFromFile("bans.json");
+		const char* banlistFilename = fb::ExecutionContext::getOptionValue("banlistFilename", "bans.json");
+		g_program->GetServer()->m_banlist.LoadFromFile(banlistFilename);
+		CYPRESS_LOGMESSAGE(LogLevel::Info, "Using banlist file: {}", banlistFilename);
 		ServerPeer* peer = ServerGameContext::GetInstance()->m_serverPeer;
 		for (const auto& player : g_program->GetServer()->m_banlist.GetBannedPlayers())
 		{
