@@ -22,13 +22,16 @@ When run from the game directory, this will launch a Team Vanquish server on Zom
 
 For joining, see Examples/Start_Join.bat
 
-# Minimal API (File-based IPC)
-The server exposes a minimal local API using files in the game working directory:
+# Minimal API (Single-thread TCP)
+The server exposes a minimal local TCP API (no extra worker thread in game logic; polled from the server update loop).
 
-- `cypress-cmd.queue`: append commands here, one per line.
-- `cypress-status.json`: server status snapshot, refreshed about once per second.
+Enable with launch args:
+- `-enableApi`
+- optional `-apiBind 127.0.0.1`
+- optional `-apiPort 8787`
 
-Command format in `cypress-cmd.queue`:
-- `Server.RestartLevel`
-- `Server.KickPlayer playerName`
-- `123\tServer.Say 'hello' 5` (optional id prefix before a tab is ignored)
+Protocol (one line per connection):
+- `PING`
+- `STATUS`
+- `CMD Server.RestartLevel`
+- `CMD Server.KickPlayer playerName`

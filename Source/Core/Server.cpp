@@ -3,8 +3,10 @@
 #include "Server.h"
 #include <string>
 #include <sstream>
-#include <fstream>
-#include <cstdio>
+#include <array>
+#include <vector>
+#define _WINSOCKAPI_
+#include <ws2tcpip.h>
 #include <Core/Program.h>
 #include <Core/Settings.h>
 #include <fb/Engine/LevelSetup.h>
@@ -84,6 +86,232 @@ namespace
 			}
 		}
 		return escaped;
+	}
+
+	struct TcpStatusSnapshot
+	{
+		bool Running = false;
+		unsigned int UptimeSec = 0;
+		int Fps = 0;
+		std::string PlayerCount;
+		int GhostCount = 0;
+		size_t MemoryMb = 0;
+		std::string Level;
+		std::string GameMode;
+		std::string HostedMode;
+		std::string Tod;
+		std::string Platform;
+		std::string StatusLine1;
+		std::string StatusLine2;
+	};
+
+	struct TcpClient
+	{
+		SOCKET Socket = INVALID_SOCKET;
+		std::string Buffer;
+		unsigned int ConnectedAtMs = 0;
+	};
+
+	SOCKET g_tcpListenSocket = INVALID_SOCKET;
+	std::vector<TcpClient> g_tcpClients;
+	TcpStatusSnapshot g_tcpStatus;
+
+	void CloseClientByIndex(size_t index)
+	{
+		if (index >= g_tcpClients.size())
+			return;
+		if (g_tcpClients[index].Socket != INVALID_SOCKET)
+			closesocket(g_tcpClients[index].Socket);
+		g_tcpClients.erase(g_tcpClients.begin() + index);
+	}
+
+	std::string BuildStatusJson()
+	{
+		return std::format(
+			"{{\"ok\":true,\"running\":{},\"uptimeSec\":{},\"fps\":{},\"playerCount\":\"{}\",\"ghostCount\":{},\"memoryMb\":{},\"level\":\"{}\",\"gameMode\":\"{}\",\"hostedMode\":\"{}\",\"tod\":\"{}\",\"platform\":\"{}\",\"statusLine1\":\"{}\",\"statusLine2\":\"{}\"}}",
+			g_tcpStatus.Running ? "true" : "false",
+			g_tcpStatus.UptimeSec,
+			g_tcpStatus.Fps,
+			EscapeJsonString(g_tcpStatus.PlayerCount),
+			g_tcpStatus.GhostCount,
+			g_tcpStatus.MemoryMb,
+			EscapeJsonString(g_tcpStatus.Level),
+			EscapeJsonString(g_tcpStatus.GameMode),
+			EscapeJsonString(g_tcpStatus.HostedMode),
+			EscapeJsonString(g_tcpStatus.Tod),
+			EscapeJsonString(g_tcpStatus.Platform),
+			EscapeJsonString(g_tcpStatus.StatusLine1),
+			EscapeJsonString(g_tcpStatus.StatusLine2)
+		);
+	}
+
+	void SendLineAndClose(size_t clientIndex, const std::string& line)
+	{
+		if (clientIndex >= g_tcpClients.size())
+			return;
+		const std::string out = line + "\n";
+		send(g_tcpClients[clientIndex].Socket, out.c_str(), (int)out.size(), 0);
+		CloseClientByIndex(clientIndex);
+	}
+
+	bool StartTcpApi(const char* bindAddress, int port)
+	{
+		if (g_tcpListenSocket != INVALID_SOCKET)
+			return true;
+
+		SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (listenSocket == INVALID_SOCKET)
+		{
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "TCP API socket create failed ({})", WSAGetLastError());
+			return false;
+		}
+
+		sockaddr_in addr{};
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons((u_short)port);
+		const char* bind = bindAddress ? bindAddress : "127.0.0.1";
+		if (inet_pton(AF_INET, bind, &addr.sin_addr) != 1)
+		{
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "Invalid TCP API bind address '{}'", bind);
+			closesocket(listenSocket);
+			return false;
+		}
+
+		u_long nonBlocking = 1;
+		ioctlsocket(listenSocket, FIONBIO, &nonBlocking);
+
+		int opt = 1;
+		setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+		if (bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+		{
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "TCP API bind failed on {}:{} ({})", bind, port, WSAGetLastError());
+			closesocket(listenSocket);
+			return false;
+		}
+
+		if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
+		{
+			CYPRESS_LOGMESSAGE(LogLevel::Error, "TCP API listen failed ({})", WSAGetLastError());
+			closesocket(listenSocket);
+			return false;
+		}
+
+		g_tcpListenSocket = listenSocket;
+		CYPRESS_LOGMESSAGE(LogLevel::Info, "TCP API listening on {}:{}", bind, port);
+		return true;
+	}
+
+	void StopTcpApi()
+	{
+		for (size_t i = 0; i < g_tcpClients.size(); ++i)
+		{
+			if (g_tcpClients[i].Socket != INVALID_SOCKET)
+				closesocket(g_tcpClients[i].Socket);
+		}
+		g_tcpClients.clear();
+		if (g_tcpListenSocket != INVALID_SOCKET)
+		{
+			closesocket(g_tcpListenSocket);
+			g_tcpListenSocket = INVALID_SOCKET;
+		}
+	}
+
+	void PollTcpApi(Cypress::Server* server)
+	{
+		if (g_tcpListenSocket == INVALID_SOCKET || !server)
+			return;
+
+		while (true)
+		{
+			sockaddr_in clientAddr{};
+			int clientAddrLen = sizeof(clientAddr);
+			SOCKET clientSocket = accept(g_tcpListenSocket, (sockaddr*)&clientAddr, &clientAddrLen);
+			if (clientSocket == INVALID_SOCKET)
+			{
+				int err = WSAGetLastError();
+				if (err != WSAEWOULDBLOCK)
+					CYPRESS_LOGMESSAGE(LogLevel::Warning, "TCP API accept failed ({})", err);
+				break;
+			}
+
+			u_long nonBlocking = 1;
+			ioctlsocket(clientSocket, FIONBIO, &nonBlocking);
+			g_tcpClients.push_back({ clientSocket, "", server->GetSystemTime() });
+		}
+
+		for (size_t i = 0; i < g_tcpClients.size();)
+		{
+			char buf[1024];
+			bool closed = false;
+			while (true)
+			{
+				int received = recv(g_tcpClients[i].Socket, buf, sizeof(buf), 0);
+				if (received > 0)
+				{
+					g_tcpClients[i].Buffer.append(buf, received);
+					if (g_tcpClients[i].Buffer.size() > 4096)
+					{
+						CloseClientByIndex(i);
+						closed = true;
+						break;
+					}
+					continue;
+				}
+				if (received == 0)
+				{
+					CloseClientByIndex(i);
+					closed = true;
+					break;
+				}
+				int err = WSAGetLastError();
+				if (err != WSAEWOULDBLOCK)
+				{
+					CloseClientByIndex(i);
+					closed = true;
+				}
+				break;
+			}
+			if (closed)
+				continue;
+
+			size_t newline = g_tcpClients[i].Buffer.find('\n');
+			if (newline != std::string::npos)
+			{
+				std::string line = g_tcpClients[i].Buffer.substr(0, newline);
+				if (!line.empty() && line.back() == '\r')
+					line.pop_back();
+				line = TrimString(line);
+
+				if (line == "PING")
+				{
+					SendLineAndClose(i, "PONG");
+					continue;
+				}
+				if (line == "STATUS")
+				{
+					SendLineAndClose(i, BuildStatusJson());
+					continue;
+				}
+				if (line.rfind("CMD ", 0) == 0)
+				{
+					const std::string cmd = TrimString(line.substr(4));
+					const bool ok = server->ExecuteServerCommandLine(cmd);
+					SendLineAndClose(i, std::format("{{\"ok\":{},\"cmd\":\"{}\"}}", ok ? "true" : "false", EscapeJsonString(cmd)));
+					continue;
+				}
+
+				SendLineAndClose(i, "{\"ok\":false,\"error\":\"Unknown command\"}");
+				continue;
+			}
+
+			unsigned int now = server->GetSystemTime();
+			if (now - g_tcpClients[i].ConnectedAtMs > 5000)
+			{
+				CloseClientByIndex(i);
+				continue;
+			}
+			++i;
+		}
 	}
 }
 
@@ -432,29 +660,14 @@ namespace Cypress
 		, m_loadRequestFromLevelControl(false)
 		, m_statusCol1()
 		, m_statusCol2()
-		, m_lastCommandPollMs(0)
-		, m_lastStatusWriteMs(0)
-		, m_commandQueueReadOffset(0)
-		, m_commandQueuePath("cypress-cmd.queue")
-		, m_statusPath("cypress-status.json")
 		, m_banlist()
 		, m_playlist()
 	{
-		{
-			std::ifstream cmdFile(m_commandQueuePath, std::ios::binary | std::ios::ate);
-			if (cmdFile.good())
-			{
-				m_commandQueueReadOffset = (size_t)cmdFile.tellg();
-			}
-			else
-			{
-				std::ofstream createFile(m_commandQueuePath, std::ios::app);
-			}
-		}
 	}
 
 	Server::~Server()
 	{
+		StopTcpApi();
 	}
 
 	bool Server::ExecuteServerCommandLine(const std::string& commandLine)
@@ -491,89 +704,8 @@ namespace Cypress
 		return false;
 	}
 
-	void Server::ProcessMiniApiCommandQueue()
-	{
-		unsigned int now = GetSystemTime();
-		if (m_lastCommandPollMs != 0 && now - m_lastCommandPollMs < 200)
-			return;
-		m_lastCommandPollMs = now;
-
-		std::ifstream file(m_commandQueuePath, std::ios::binary);
-		if (!file.good())
-			return;
-
-		file.seekg(0, std::ios::end);
-		size_t fileSize = (size_t)file.tellg();
-		if (m_commandQueueReadOffset > fileSize)
-			m_commandQueueReadOffset = 0;
-		file.seekg((std::streamoff)m_commandQueueReadOffset, std::ios::beg);
-
-		std::string line;
-		while (std::getline(file, line))
-		{
-			if (!line.empty() && line.back() == '\r')
-				line.pop_back();
-			if (line.empty())
-				continue;
-
-			size_t tabPos = line.find('\t');
-			std::string cmd = tabPos == std::string::npos ? line : line.substr(tabPos + 1);
-			cmd = TrimString(cmd);
-			if (cmd.empty())
-				continue;
-
-			CYPRESS_LOGTOSERVER(LogLevel::Info, "[MiniAPI] {}", cmd.c_str());
-			ExecuteServerCommandLine(cmd);
-		}
-
-		std::streamoff endPos = file.tellg();
-		if (endPos < 0)
-			m_commandQueueReadOffset = fileSize;
-		else
-			m_commandQueueReadOffset = (size_t)endPos;
-	}
-
-	void Server::WriteMiniApiStatusFile(
-		unsigned int sec,
-		int fps,
-		const std::string& playerCountStr,
-		int ghostCount,
-		const char* levelName,
-		const char* gameMode,
-		const char* hostedMode,
-		const char* timeOfDay,
-		const char* platformName,
-		size_t memoryMb)
-	{
-		const std::string tmpPath = m_statusPath + ".tmp";
-		std::ofstream out(tmpPath, std::ios::out | std::ios::trunc);
-		if (!out.good())
-			return;
-
-		out << "{\n"
-			<< "  \"running\": " << (GetRunning() ? "true" : "false") << ",\n"
-			<< "  \"uptimeSec\": " << sec << ",\n"
-			<< "  \"fps\": " << fps << ",\n"
-			<< "  \"playerCount\": \"" << EscapeJsonString(playerCountStr) << "\",\n"
-			<< "  \"ghostCount\": " << ghostCount << ",\n"
-			<< "  \"memoryMb\": " << memoryMb << ",\n"
-			<< "  \"level\": \"" << EscapeJsonString(levelName ? levelName : "") << "\",\n"
-			<< "  \"gameMode\": \"" << EscapeJsonString(gameMode ? gameMode : "") << "\",\n"
-			<< "  \"hostedMode\": \"" << EscapeJsonString(hostedMode ? hostedMode : "") << "\",\n"
-			<< "  \"tod\": \"" << EscapeJsonString(timeOfDay ? timeOfDay : "") << "\",\n"
-			<< "  \"platform\": \"" << EscapeJsonString(platformName ? platformName : "") << "\",\n"
-			<< "  \"statusLine1\": \"" << EscapeJsonString(m_statusCol1) << "\",\n"
-			<< "  \"statusLine2\": \"" << EscapeJsonString(m_statusCol2) << "\"\n"
-			<< "}\n";
-		out.close();
-		std::remove(m_statusPath.c_str());
-		std::rename(tmpPath.c_str(), m_statusPath.c_str());
-	}
-
 	void Server::UpdateStatus(void* fbServerInstance, float deltaTime)
 	{
-		ProcessMiniApiCommandQueue();
-
 		static unsigned int startSystemTime = GetSystemTime();
 		unsigned int sec = (GetSystemTime() - startSystemTime) / 1000;
 		unsigned int min = (sec / 60) % 60;
@@ -689,34 +821,25 @@ namespace Cypress
 			g_program->GetServer()->SetStatusUpdated(false);
 		}
 
-		unsigned int now = GetSystemTime();
-		if (m_lastStatusWriteMs == 0 || now - m_lastStatusWriteMs >= 1000)
+		g_tcpStatus.Running = GetRunning();
+		g_tcpStatus.UptimeSec = sec;
+		g_tcpStatus.Fps = (int)fps;
+		g_tcpStatus.PlayerCount = playerCountStr;
+		g_tcpStatus.GhostCount = ghostcount;
+		g_tcpStatus.MemoryMb = GetMemoryUsage();
+		g_tcpStatus.Level = setup.m_name.length() > 0 ? extractFileName(setup.m_name.c_str()) : "No level";
 		{
-			m_lastStatusWriteMs = now;
-			const char* levelNameForFile = "No level";
-			const char* gameModeForFile = "";
-			const char* hostedModeForFile = "";
-			const char* todForFile = "";
-			if (setup.m_name.length() > 0)
-			{
-				levelNameForFile = extractFileName(setup.m_name.c_str());
-				gameModeForFile = setup.getInclusionOption("GameMode");
-				hostedModeForFile = setup.getInclusionOption("HostedMode");
-				todForFile = setup.getInclusionOption("TOD");
-			}
-
-			WriteMiniApiStatusFile(
-				sec,
-				(int)fps,
-				playerCountStr,
-				ghostcount,
-				levelNameForFile,
-				gameModeForFile,
-				hostedModeForFile,
-				todForFile,
-				platformName,
-				GetMemoryUsage());
+			const char* gameModeOpt = setup.getInclusionOption("GameMode");
+			const char* hostedModeOpt = setup.getInclusionOption("HostedMode");
+			const char* todOpt = setup.getInclusionOption("TOD");
+			g_tcpStatus.GameMode = gameModeOpt ? gameModeOpt : "";
+			g_tcpStatus.HostedMode = hostedModeOpt ? hostedModeOpt : "";
+			g_tcpStatus.Tod = todOpt ? todOpt : "";
 		}
+		g_tcpStatus.Platform = platformName ? platformName : "";
+		g_tcpStatus.StatusLine1 = m_statusCol1;
+		g_tcpStatus.StatusLine2 = m_statusCol2;
+		PollTcpApi(this);
 	}
 
 	size_t Server::GetMemoryUsage()
@@ -830,6 +953,21 @@ namespace Cypress
 		fb_spawnServer(thisPtr, spawnInfo);
 
 		g_program->GetGameModule()->RegisterCommands();
+
+		bool enableTcpApi = fb::ExecutionContext::getOptionValue("enableApi") != nullptr
+			|| fb::ExecutionContext::getOptionValue("apiPort") != nullptr;
+		if (enableTcpApi)
+		{
+			const char* apiBind = fb::ExecutionContext::getOptionValue("apiBind", "127.0.0.1");
+			const char* apiPortStr = fb::ExecutionContext::getOptionValue("apiPort", "8787");
+			int apiPort = atoi(apiPortStr);
+			if (apiPort <= 0 || apiPort > 65535)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Warning, "Invalid -apiPort '{}', using 8787", apiPortStr);
+				apiPort = 8787;
+			}
+			StartTcpApi(apiBind, apiPort);
+		}
 
 		g_program->GetServer()->m_banlist.LoadFromFile("bans.json");
 		ServerPeer* peer = ServerGameContext::GetInstance()->m_serverPeer;

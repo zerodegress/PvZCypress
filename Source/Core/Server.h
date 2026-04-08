@@ -3,7 +3,6 @@
 #include <Kyber/SocketManager.h>
 #include <ServerBanlist.h>
 #include <ServerPlaylist.h>
-#include <cstdint>
 #include <string>
 
 #include <fb/Engine/ConsoleContext.h>
@@ -90,28 +89,10 @@ namespace Cypress
 		bool m_loadRequestFromLevelControl;
 		std::string m_statusCol1;
 		std::string m_statusCol2;
-		uint64_t m_lastCommandPollMs;
-		uint64_t m_lastStatusWriteMs;
-		size_t m_commandQueueReadOffset;
-		std::string m_commandQueuePath;
-		std::string m_statusPath;
 		ServerBanlist m_banlist;
 		ServerPlaylist m_playlist;
 
 		friend class Program;
-
-		void ProcessMiniApiCommandQueue();
-		void WriteMiniApiStatusFile(
-			unsigned int sec,
-			int fps,
-			const std::string& playerCountStr,
-			int ghostCount,
-			const char* levelName,
-			const char* gameMode,
-			const char* hostedMode,
-			const char* timeOfDay,
-			const char* platformName,
-			size_t memoryMb);
 	};
 }
 #endif
