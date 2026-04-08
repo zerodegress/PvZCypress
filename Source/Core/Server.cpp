@@ -3,8 +3,17 @@
 #include "Server.h"
 #include <string>
 #include <sstream>
+#include <array>
+#include <atomic>
+#include <mutex>
+#include <thread>
+#include <memory>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <Core/Program.h>
 #include <Core/Settings.h>
+#include <Core/Logging.h>
 #include <fb/Engine/LevelSetup.h>
 #include <fb/Engine/Server.h>
 #include <fb/Main.h>
@@ -17,10 +26,255 @@
 #include <fb/TypeInfo/NetworkSettings.h>
 #include <fb/TypeInfo/SystemSettings.h>
 #include <fb/TypeInfo/GameSettings.h>
+#define _WINSOCKAPI_
+#include <ws2tcpip.h>
 
 using namespace fb;
 
 #if(HAS_DEDICATED_SERVER)
+namespace
+{
+	std::unique_ptr<class MiniApiHttpServer> g_miniApiHttpServer;
+
+	static std::string TrimString(std::string value)
+	{
+		size_t start = value.find_first_not_of(" \t\r\n");
+		if (start == std::string::npos)
+			return "";
+		size_t end = value.find_last_not_of(" \t\r\n");
+		return value.substr(start, end - start + 1);
+	}
+
+	static std::string EscapeJsonString(const std::string& value)
+	{
+		std::string escaped;
+		escaped.reserve(value.size() + 16);
+		for (unsigned char c : value)
+		{
+			switch (c)
+			{
+			case '\\': escaped += "\\\\"; break;
+			case '"': escaped += "\\\""; break;
+			case '\n': escaped += "\\n"; break;
+			case '\r': escaped += "\\r"; break;
+			case '\t': escaped += "\\t"; break;
+			default:
+				if (c < 0x20)
+					escaped += '?';
+				else
+					escaped += (char)c;
+				break;
+			}
+		}
+		return escaped;
+	}
+
+	class MiniApiHttpServer
+	{
+	public:
+		MiniApiHttpServer(std::string bindAddress, int port)
+			: m_bindAddress(std::move(bindAddress))
+			, m_port(port)
+			, m_running(false)
+			, m_listenSocket(INVALID_SOCKET)
+		{
+		}
+
+		~MiniApiHttpServer()
+		{
+			Stop();
+		}
+
+		void Start()
+		{
+			if (m_running.exchange(true))
+				return;
+			m_thread = std::thread(&MiniApiHttpServer::Run, this);
+		}
+
+		void Stop()
+		{
+			if (!m_running.exchange(false))
+				return;
+
+			SOCKET listenSocket = m_listenSocket.exchange(INVALID_SOCKET);
+			if (listenSocket != INVALID_SOCKET)
+				closesocket(listenSocket);
+
+			if (m_thread.joinable())
+				m_thread.join();
+		}
+
+	private:
+		static std::string BuildHttpResponse(int status, const char* statusText, const std::string& body)
+		{
+			return std::format(
+				"HTTP/1.1 {} {}\r\n"
+				"Content-Type: application/json\r\n"
+				"Connection: close\r\n"
+				"Content-Length: {}\r\n\r\n{}",
+				status,
+				statusText,
+				body.size(),
+				body);
+		}
+
+		static bool ParseRequestLine(const std::string& request, std::string& outMethod, std::string& outTarget)
+		{
+			size_t lineEnd = request.find("\r\n");
+			if (lineEnd == std::string::npos)
+				return false;
+			std::string requestLine = request.substr(0, lineEnd);
+			size_t m1 = requestLine.find(' ');
+			size_t m2 = requestLine.find(' ', m1 == std::string::npos ? 0 : m1 + 1);
+			if (m1 == std::string::npos || m2 == std::string::npos)
+				return false;
+			outMethod = requestLine.substr(0, m1);
+			outTarget = requestLine.substr(m1 + 1, m2 - m1 - 1);
+			return true;
+		}
+
+		static std::string GetPathOnly(const std::string& target)
+		{
+			size_t q = target.find('?');
+			return q == std::string::npos ? target : target.substr(0, q);
+		}
+
+		void SendJson(SOCKET clientSocket, int status, const char* statusText, const std::string& jsonBody)
+		{
+			const std::string response = BuildHttpResponse(status, statusText, jsonBody);
+			send(clientSocket, response.c_str(), (int)response.size(), 0);
+		}
+
+		void HandleClient(SOCKET clientSocket)
+		{
+			std::string request;
+			std::array<char, 2048> buf{};
+			while (request.find("\r\n\r\n") == std::string::npos)
+			{
+				int received = recv(clientSocket, buf.data(), (int)buf.size(), 0);
+				if (received <= 0)
+					return;
+				request.append(buf.data(), received);
+				if (request.size() > 32 * 1024)
+					return;
+			}
+
+			std::string method;
+			std::string target;
+			if (!ParseRequestLine(request, method, target))
+			{
+				SendJson(clientSocket, 400, "Bad Request", "{\"ok\":false,\"error\":\"Malformed request\"}");
+				return;
+			}
+			const std::string path = GetPathOnly(target);
+
+			if (method == "GET" && path == "/health")
+			{
+				SendJson(clientSocket, 200, "OK", "{\"ok\":true}");
+				return;
+			}
+
+			if (method == "GET" && path == "/v1/status")
+			{
+				Cypress::Server::ApiStatusSnapshot s{};
+				if (g_program && g_program->IsServer() && g_program->GetServer())
+					s = g_program->GetServer()->GetApiStatusSnapshot();
+
+				const std::string body = std::format(
+					"{{\"ok\":true,\"running\":{},\"uptimeSec\":{},\"fps\":{},\"playerCount\":\"{}\",\"ghostCount\":{},\"memoryMb\":{},\"level\":\"{}\",\"gameMode\":\"{}\",\"hostedMode\":\"{}\",\"tod\":\"{}\",\"platform\":\"{}\",\"statusLine1\":\"{}\",\"statusLine2\":\"{}\"}}",
+					s.Running ? "true" : "false",
+					s.UptimeSec,
+					s.Fps,
+					EscapeJsonString(s.PlayerCount),
+					s.GhostCount,
+					s.MemoryMb,
+					EscapeJsonString(s.Level),
+					EscapeJsonString(s.GameMode),
+					EscapeJsonString(s.HostedMode),
+					EscapeJsonString(s.Tod),
+					EscapeJsonString(s.Platform),
+					EscapeJsonString(s.StatusLine1),
+					EscapeJsonString(s.StatusLine2));
+				SendJson(clientSocket, 200, "OK", body);
+				return;
+			}
+
+			SendJson(clientSocket, 404, "Not Found", "{\"ok\":false,\"error\":\"Unknown endpoint\"}");
+		}
+
+		void Run()
+		{
+			SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+			if (listenSocket == INVALID_SOCKET)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "Mini API socket create failed ({})", WSAGetLastError());
+				m_running = false;
+				return;
+			}
+
+			sockaddr_in addr{};
+			addr.sin_family = AF_INET;
+			addr.sin_port = htons((u_short)m_port);
+			if (inet_pton(AF_INET, m_bindAddress.c_str(), &addr.sin_addr) != 1)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "Mini API invalid bind address '{}'", m_bindAddress);
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			int opt = 1;
+			setsockopt(listenSocket, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+			if (bind(listenSocket, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "Mini API bind failed on {}:{} ({})", m_bindAddress, m_port, WSAGetLastError());
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Error, "Mini API listen failed ({})", WSAGetLastError());
+				closesocket(listenSocket);
+				m_running = false;
+				return;
+			}
+
+			m_listenSocket = listenSocket;
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "Mini API listening on http://{}:{}", m_bindAddress, m_port);
+
+			while (m_running)
+			{
+				sockaddr_in clientAddr{};
+				int clientAddrLen = sizeof(clientAddr);
+				SOCKET clientSocket = accept(listenSocket, (sockaddr*)&clientAddr, &clientAddrLen);
+				if (clientSocket == INVALID_SOCKET)
+				{
+					if (m_running)
+						CYPRESS_LOGMESSAGE(LogLevel::Warning, "Mini API accept failed ({})", WSAGetLastError());
+					break;
+				}
+				HandleClient(clientSocket);
+				closesocket(clientSocket);
+			}
+
+			SOCKET old = m_listenSocket.exchange(INVALID_SOCKET);
+			if (old != INVALID_SOCKET)
+				closesocket(old);
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "Mini API stopped");
+			m_running = false;
+		}
+
+		std::string m_bindAddress;
+		int m_port;
+		std::atomic<bool> m_running;
+		std::atomic<SOCKET> m_listenSocket;
+		std::thread m_thread;
+	};
+}
+
 namespace Cypress
 {
 	void Server::ServerRestartLevel(fb::ConsoleContext& cc)
@@ -368,12 +622,57 @@ namespace Cypress
 		, m_statusCol2()
 		, m_banlist()
 		, m_playlist()
+		, m_apiStatusMutex()
+		, m_apiStatusSnapshot()
 	{
-
+		m_apiStatusSnapshot.Running = false;
+		m_apiStatusSnapshot.UptimeSec = 0;
+		m_apiStatusSnapshot.Fps = 0;
+		m_apiStatusSnapshot.GhostCount = 0;
+		m_apiStatusSnapshot.MemoryMb = 0;
 	}
 
 	Server::~Server()
 	{
+		if (g_miniApiHttpServer)
+		{
+			g_miniApiHttpServer->Stop();
+			g_miniApiHttpServer.reset();
+		}
+	}
+
+	Server::ApiStatusSnapshot Server::GetApiStatusSnapshot()
+	{
+		std::scoped_lock lock(m_apiStatusMutex);
+		return m_apiStatusSnapshot;
+	}
+
+	void Server::UpdateApiStatusSnapshot(
+		unsigned int sec,
+		int fps,
+		const std::string& playerCountStr,
+		int ghostCount,
+		size_t memoryMb,
+		const char* levelName,
+		const char* gameMode,
+		const char* hostedMode,
+		const char* timeOfDay,
+		const char* platformName)
+	{
+		std::scoped_lock lock(m_apiStatusMutex);
+		m_apiStatusSnapshot.Running = m_running;
+		m_apiStatusSnapshot.UptimeSec = sec;
+		m_apiStatusSnapshot.Fps = fps;
+		m_apiStatusSnapshot.PlayerCount = playerCountStr;
+		m_apiStatusSnapshot.GhostCount = ghostCount;
+		m_apiStatusSnapshot.MemoryMb = memoryMb;
+		m_apiStatusSnapshot.Level = levelName ? levelName : "";
+		m_apiStatusSnapshot.GameMode = gameMode ? gameMode : "";
+		m_apiStatusSnapshot.HostedMode = hostedMode ? hostedMode : "";
+		m_apiStatusSnapshot.Tod = timeOfDay ? timeOfDay : "";
+		m_apiStatusSnapshot.Platform = platformName ? platformName : "";
+		m_apiStatusSnapshot.StatusLine1 = m_statusCol1;
+		m_apiStatusSnapshot.StatusLine2 = m_statusCol2;
 	}
 
 	void Server::UpdateStatus(void* fbServerInstance, float deltaTime)
@@ -461,10 +760,10 @@ namespace Cypress
 		if (setup.m_name.length() > 0)
 		{
 			//creating a server without any of these set will break the status columns, so we need to make sure they are set to something
-			const char* levelName    = extractFileName(setup.m_name.c_str());
-			const char* gameMode     = strlen(setup.getInclusionOption("GameMode")) > 1 ? setup.getInclusionOption("GameMode") : "\t";
-			const char* hostedMode   = strlen(setup.getInclusionOption("HostedMode")) > 1 ? setup.getInclusionOption("HostedMode") : "\t";
-			const char* timeOfDay    = strlen(setup.getInclusionOption("TOD")) > 1 ? setup.getInclusionOption("TOD") : "\t";
+			const char* levelName = extractFileName(setup.m_name.c_str());
+			const char* gameMode = strlen(setup.getInclusionOption("GameMode")) > 1 ? setup.getInclusionOption("GameMode") : "\t";
+			const char* hostedMode = strlen(setup.getInclusionOption("HostedMode")) > 1 ? setup.getInclusionOption("HostedMode") : "\t";
+			const char* timeOfDay = strlen(setup.getInclusionOption("TOD")) > 1 ? setup.getInclusionOption("TOD") : "\t";
 
 			g_program->GetServer()->SetStatusColumn2(
 				std::format(
@@ -484,7 +783,7 @@ namespace Cypress
 		{
 			g_program->GetServer()->SetStatusColumn2("Level: No level");
 		}
-		
+
 		static size_t tick = 0;
 		size_t fps = int(1.0f / currentDeltaTime);
 		if (tick != fps)
@@ -492,6 +791,33 @@ namespace Cypress
 			tick = fps;
 			g_program->GetServer()->SetStatusUpdated(false);
 		}
+
+		const char* levelNameForApi = "No level";
+		const char* gameModeForApi = "";
+		const char* hostedModeForApi = "";
+		const char* timeOfDayForApi = "";
+		if (setup.m_name.length() > 0)
+		{
+			levelNameForApi = extractFileName(setup.m_name.c_str());
+			const char* gameModeOpt = setup.getInclusionOption("GameMode");
+			const char* hostedModeOpt = setup.getInclusionOption("HostedMode");
+			const char* todOpt = setup.getInclusionOption("TOD");
+			gameModeForApi = gameModeOpt ? gameModeOpt : "";
+			hostedModeForApi = hostedModeOpt ? hostedModeOpt : "";
+			timeOfDayForApi = todOpt ? todOpt : "";
+		}
+
+		UpdateApiStatusSnapshot(
+			sec,
+			(int)fps,
+			playerCountStr,
+			ghostcount,
+			GetMemoryUsage(),
+			levelNameForApi,
+			gameModeForApi,
+			hostedModeForApi,
+			timeOfDayForApi,
+			platformName);
 	}
 
 	size_t Server::GetMemoryUsage()
@@ -605,6 +931,22 @@ namespace Cypress
 		fb_spawnServer(thisPtr, spawnInfo);
 
 		g_program->GetGameModule()->RegisterCommands();
+
+		bool enableApi = fb::ExecutionContext::getOptionValue("enableApi") != nullptr
+			|| fb::ExecutionContext::getOptionValue("apiPort") != nullptr;
+		if (enableApi && !g_miniApiHttpServer)
+		{
+			const char* apiBind = fb::ExecutionContext::getOptionValue("apiBind", "127.0.0.1");
+			const char* apiPortStr = fb::ExecutionContext::getOptionValue("apiPort", "8787");
+			int apiPort = atoi(apiPortStr);
+			if (apiPort <= 0 || apiPort > 65535)
+			{
+				CYPRESS_LOGMESSAGE(LogLevel::Warning, "Invalid -apiPort '{}', using 8787", apiPortStr);
+				apiPort = 8787;
+			}
+			g_miniApiHttpServer = std::make_unique<MiniApiHttpServer>(TrimString(apiBind ? apiBind : "127.0.0.1"), apiPort);
+			g_miniApiHttpServer->Start();
+		}
 
 		g_program->GetServer()->m_banlist.LoadFromFile("bans.json");
 		ServerPeer* peer = ServerGameContext::GetInstance()->m_serverPeer;

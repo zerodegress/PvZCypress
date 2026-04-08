@@ -3,6 +3,9 @@
 #include <Kyber/SocketManager.h>
 #include <ServerBanlist.h>
 #include <ServerPlaylist.h>
+#include <cstdint>
+#include <mutex>
+#include <string>
 
 #include <fb/Engine/ConsoleContext.h>
 #include <fb/Engine/LevelSetup.h>
@@ -14,6 +17,23 @@ namespace Cypress
 	class Server
 	{
 	public:
+		struct ApiStatusSnapshot
+		{
+			bool Running;
+			unsigned int UptimeSec;
+			int Fps;
+			std::string PlayerCount;
+			int GhostCount;
+			size_t MemoryMb;
+			std::string Level;
+			std::string GameMode;
+			std::string HostedMode;
+			std::string Tod;
+			std::string Platform;
+			std::string StatusLine1;
+			std::string StatusLine2;
+		};
+
 		Server();
 		~Server();
 
@@ -48,6 +68,7 @@ namespace Cypress
 		Kyber::SocketManager* GetSocketManager() { return m_socketManager; }
 		size_t GetMemoryUsage();
 		unsigned int GetSystemTime();
+		ApiStatusSnapshot GetApiStatusSnapshot();
 		std::string& GetStatusColumn1() { return m_statusCol1; }
 		void SetStatusColumn1(std::string newStatus) { m_statusCol1 = newStatus; }
 		std::string& GetStatusColumn2() { return m_statusCol2; }
@@ -89,8 +110,22 @@ namespace Cypress
 		std::string m_statusCol2;
 		ServerBanlist m_banlist;
 		ServerPlaylist m_playlist;
+		std::mutex m_apiStatusMutex;
+		ApiStatusSnapshot m_apiStatusSnapshot;
 
 		friend class Program;
+
+		void UpdateApiStatusSnapshot(
+			unsigned int sec,
+			int fps,
+			const std::string& playerCountStr,
+			int ghostCount,
+			size_t memoryMb,
+			const char* levelName,
+			const char* gameMode,
+			const char* hostedMode,
+			const char* timeOfDay,
+			const char* platformName);
 	};
 }
 #endif
