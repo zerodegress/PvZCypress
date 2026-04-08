@@ -63,6 +63,13 @@ namespace
 
 void Cypress_LogToServer(const char* msg, const char* fileName, int lineNumber, LogLevel logLevel)
 {
+	if (!g_program || !g_program->IsServer())
+		return;
+
+	Cypress::Server* server = g_program->GetServer();
+	if (!server || !server->GetServerLogEnabled())
+		return;
+
 #if(HAS_DEDICATED_SERVER)
     time_t now = time(nullptr);
     struct tm* tm_info = localtime(&now);
@@ -86,17 +93,14 @@ void Cypress_LogToServer(const char* msg, const char* fileName, int lineNumber, 
 		std::cout << "\x1B[36m[SrvLog]" << formattedLog.c_str() << "\x1B[0m";
 	else
 	{
-		if (g_program->GetServer()->GetServerLogEnabled())
+		int pos = (int)SendMessageA(*g_listBox, LB_ADDSTRING, 0, (LPARAM)formattedLog.c_str());
+		if (pos >= 1000)
 		{
-			int pos = (int)SendMessageA(*g_listBox, LB_ADDSTRING, 0, (LPARAM)formattedLog.c_str());
-			if (pos >= 1000)
-			{
-				SendMessage(*g_listBox, LB_DELETESTRING, 0, 0);
-				pos--;
-			}
-
-			SendMessage(*g_listBox, LB_SETCURSEL, pos, 1);
+			SendMessage(*g_listBox, LB_DELETESTRING, 0, 0);
+			pos--;
 		}
+
+		SendMessage(*g_listBox, LB_SETCURSEL, pos, 1);
 	}
 }
 

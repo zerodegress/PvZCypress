@@ -32,7 +32,7 @@ namespace Cypress
 		bool GetStatusUpdated() { return m_statusUpdated; }
 		void SetStatusUpdated(bool statusUpdated) { m_statusUpdated = statusUpdated; }
 
-		bool GetServerLogEnabled() { return true; }
+		bool GetServerLogEnabled() { return m_serverLogEnabled; }
 		void SetServerLogEnabled(bool value)
 		{
 			m_serverLogEnabled = value;
