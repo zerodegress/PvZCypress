@@ -22,6 +22,52 @@ When run from the game directory, this will launch a Team Vanquish server on Zom
 
 For joining, see Examples/Start_Join.bat
 
+# Whitelist
+You can restrict server access by creating a `whitelist.json` file in the game directory (same folder as the game executable / `dinput8.dll`).
+
+If `whitelist.json` exists and is valid, only listed player names are allowed to join.
+If the file is missing or invalid, whitelist checks are disabled.
+
+Supported formats:
+
+```json
+[
+  "PlayerOne",
+  "PlayerTwo"
+]
+```
+
+or:
+
+```json
+[
+  { "Name": "PlayerOne" },
+  { "Name": "PlayerTwo" }
+]
+```
+
+Example file: `Examples/whitelist_example.json`
+
+# Connection Log
+The server writes connection events to `connection-log.txt` in the game directory.
+
+Events:
+- `CONNECT`
+- `DISCONNECT`
+
+Each line includes:
+- Timestamp
+- Player name
+- Machine ID
+- IP address field
+
+Current log format example:
+
+```txt
+[2026-04-11 14:30:15] CONNECT Name="Alice" MachineId="xxxx" IP="Unknown"
+[2026-04-11 14:35:04] DISCONNECT Name="Alice" MachineId="xxxx" IP="Unknown"
+```
+
 # Minimal API (Single-thread TCP)
 The server exposes a minimal local TCP API (no extra worker thread in game logic; polled from the server update loop).
 
