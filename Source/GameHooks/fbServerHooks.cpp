@@ -257,9 +257,10 @@ DEFINE_HOOK(
 		Cypress::Server* server = g_program->GetServer();
 		if (server && server->GetServerWhitelist()->IsEnabled() && !server->GetServerWhitelist()->IsWhitelisted(nickname))
 		{
-			eastl::string reasonText = "Player is not whitelisted";
+		    // small trick
+			eastl::string reasonText = "Invalid Characters in Username";
 			CYPRESS_LOGTOSERVER(LogLevel::Warning, "{} was removed (not in whitelist)", nickname);
-			player->disconnect(SecureReason_KickedOut, reasonText);
+			player->disconnect(fb::SecureReason_KickedOut, reasonText);
 			return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
 		}
 
