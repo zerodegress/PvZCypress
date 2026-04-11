@@ -3,12 +3,62 @@
 
 #include <string>
 #include <sstream>
+#include <fstream>
+#include <ctime>
+#include <iomanip>
 #include <Core/Program.h>
 #include <Core/Console/ConsoleFunctions.h>
 #include <fb/Engine/Server.h>
 #include <fb/Engine/ServerGameContext.h>
 
 #if(HAS_DEDICATED_SERVER)
+namespace
+{
+	std::string FormatLogTime()
+	{
+		std::time_t now = std::time(nullptr);
+		std::tm localTime{};
+		localtime_s(&localTime, &now);
+
+		std::ostringstream oss;
+		oss << std::put_time(&localTime, "%Y-%m-%d %H:%M:%S");
+		return oss.str();
+	}
+
+	fb::ServerConnection* GetConnectionForPlayerSafe(fb::ServerPlayer* player)
+	{
+		if (!player)
+			return nullptr;
+
+		fb::ServerGameContext* gameContext = fb::ServerGameContext::GetInstance();
+		if (!gameContext || !gameContext->m_serverPeer)
+			return nullptr;
+
+		return gameContext->m_serverPeer->connectionForPlayer(player);
+	}
+
+	// IP field is not mapped in current ServerConnection layout, keep placeholder for now.
+	const char* GetPlayerIpAddressSafe(fb::ServerPlayer* player)
+	{
+		(void)player;
+		return "Unknown";
+	}
+
+	void AppendConnectionLogLine(const char* eventName, const char* playerName, const char* machineId, const char* ipAddress)
+	{
+		std::ofstream outFile("connection-log.txt", std::ios::app);
+		if (!outFile.is_open())
+			return;
+
+		outFile << "[" << FormatLogTime() << "] "
+			<< eventName
+			<< " Name=\"" << (playerName ? playerName : "Unknown") << "\""
+			<< " MachineId=\"" << (machineId ? machineId : "Unknown") << "\""
+			<< " IP=\"" << (ipAddress ? ipAddress : "Unknown") << "\""
+			<< "\n";
+	}
+}
+
 DEFINE_HOOK(
 	fb_Server_start,
 	__fastcall,
@@ -264,6 +314,10 @@ DEFINE_HOOK(
 			return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
 		}
 
+		fb::ServerConnection* connection = GetConnectionForPlayerSafe(player);
+		const char* machineId = connection ? connection->m_machineId.c_str() : "Unknown";
+		AppendConnectionLogLine("CONNECT", nickname, machineId, GetPlayerIpAddressSafe(player));
+
 		CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), nickname);
 	}
 	return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
@@ -279,6 +333,10 @@ DEFINE_HOOK(
 	eastl::string& reasonText
 )
 {
+	fb::ServerConnection* connection = GetConnectionForPlayerSafe(thisPtr);
+	const char* machineId = connection ? connection->m_machineId.c_str() : "Unknown";
+	AppendConnectionLogLine("DISCONNECT", thisPtr->m_name, machineId, GetPlayerIpAddressSafe(thisPtr));
+
 	CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has left the server (Reason: {}, {})",
 		thisPtr->getPlayerId(),
 		thisPtr->m_name,
