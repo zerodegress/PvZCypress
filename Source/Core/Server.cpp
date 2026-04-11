@@ -661,6 +661,7 @@ namespace Cypress
 		, m_statusCol1()
 		, m_statusCol2()
 		, m_banlist()
+		, m_whitelist()
 		, m_playlist()
 	{
 	}
@@ -975,6 +976,19 @@ namespace Cypress
 		{
 			peer->m_bannedPlayers.push_back(player.Name.c_str());
 			peer->m_bannedMachines.push_back(player.MachineId.c_str());
+		}
+
+		if (g_program->GetServer()->m_whitelist.LoadFromFile("whitelist.json"))
+		{
+			CYPRESS_LOGMESSAGE(
+				LogLevel::Info,
+				"Whitelist enabled with {} player(s) from whitelist.json",
+				g_program->GetServer()->m_whitelist.GetPlayerCount()
+			);
+		}
+		else
+		{
+			CYPRESS_LOGMESSAGE(LogLevel::Info, "whitelist.json not found or invalid, whitelist disabled.");
 		}
 
 		CYPRESS_LOGMESSAGE(LogLevel::Info, "Initialized Dedicated Server");

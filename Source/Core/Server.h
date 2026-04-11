@@ -2,6 +2,7 @@
 #include <Core/Config.h>
 #include <Kyber/SocketManager.h>
 #include <ServerBanlist.h>
+#include <ServerWhitelist.h>
 #include <ServerPlaylist.h>
 #include <string>
 
@@ -55,6 +56,7 @@ namespace Cypress
 		void SetStatusColumn2(std::string newStatus) { m_statusCol2 = newStatus; }
 
 		ServerBanlist* GetServerBanlist() { return &m_banlist; }
+		ServerWhitelist* GetServerWhitelist() { return &m_whitelist; }
 		ServerPlaylist* GetServerPlaylist() { return &m_playlist; }
 
 		void LoadPlaylistSetup(const PlaylistLevelSetup* nextSetup);
@@ -90,6 +92,7 @@ namespace Cypress
 		std::string m_statusCol1;
 		std::string m_statusCol2;
 		ServerBanlist m_banlist;
+		ServerWhitelist m_whitelist;
 		ServerPlaylist m_playlist;
 
 		friend class Program;

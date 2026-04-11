@@ -43,7 +43,7 @@ DEFINE_HOOK(
 	bool updated = Orig_fb_Server_update(thisPtr, params);
 	if (g_program->IsServer())
 	{
-		
+
 		Cypress::Server* server = g_program->GetServer();
 		server->UpdateStatus(thisPtr, ptrread<float>(params, CYPRESS_GW_SELECT(0x18, 0x28)));
 
@@ -208,6 +208,17 @@ DEFINE_HOOK(
 )
 {
 	const char* playerName = ptrread<const char*>(msg, 0x48);
+	Cypress::Server* server = g_program->GetServer();
+
+	if (server && server->GetServerWhitelist()->IsEnabled() && !server->GetServerWhitelist()->IsWhitelisted(playerName))
+	{
+		thisPtr->m_shouldDisconnect = true;
+		thisPtr->m_disconnectReason = 0x4;
+		// small trick
+		thisPtr->m_reasonText = "Invalid Characters in Username";
+		CYPRESS_LOGTOSERVER(LogLevel::Warning, "{} was denied (not in whitelist)", playerName);
+	}
+
 	int nameLen = strlen(playerName);
 	if (nameLen < 3 || nameLen > 32)
 	{
@@ -243,6 +254,15 @@ DEFINE_HOOK(
 {
 	if (!player->isAIPlayer())
 	{
+		Cypress::Server* server = g_program->GetServer();
+		if (server && server->GetServerWhitelist()->IsEnabled() && !server->GetServerWhitelist()->IsWhitelisted(nickname))
+		{
+			eastl::string reasonText = "Player is not whitelisted";
+			CYPRESS_LOGTOSERVER(LogLevel::Warning, "{} was removed (not in whitelist)", nickname);
+			player->disconnect(SecureReason_KickedOut, reasonText);
+			return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
+		}
+
 		CYPRESS_LOGTOSERVER(LogLevel::Info, "[Id: {}] {} has joined the server", player->getPlayerId(), nickname);
 	}
 	return Orig_fb_ServerPlayerManager_addPlayer(thisPtr, player, nickname);
